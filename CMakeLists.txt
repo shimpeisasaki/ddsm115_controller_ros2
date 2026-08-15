@@ -49,13 +49,17 @@ install(TARGETS
   RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY rviz_config DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
+install(PROGRAMS scripts/motor_test_gui DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_cpplint REQUIRED)
+  find_package(ament_cmake_flake8 REQUIRED)
   find_package(ament_cmake_lint_cmake REQUIRED)
   find_package(ament_cmake_uncrustify REQUIRED)
 
   ament_cpplint(FILTERS "-legal/copyright")
+  ament_flake8(launch scripts/motor_test_gui)
   ament_lint_cmake()
   ament_uncrustify()
 endif()

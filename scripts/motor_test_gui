@@ -1,0 +1,896 @@
+#!/usr/bin/env python3
+
+import math
+import os
+import shutil
+import sys
+import tempfile
+import time
+
+import rclpy
+import yaml
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
+from PyQt5.QtCore import QEvent, QPointF, Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QPainter, QPen
+from PyQt5.QtWidgets import (
+    QApplication,
+    QButtonGroup,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHeaderView,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QRadioButton,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import Joy
+from std_msgs.msg import Bool, Float32MultiArray, Int16MultiArray, Int8MultiArray
+from std_srvs.srv import SetBool
+
+
+class ControlPad(QWidget):
+    command_changed = pyqtSignal(float, float)
+    command_released = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.single_mode = True
+        self.active = False
+        self.position = QPointF(0.0, 0.0)
+        self.setMinimumSize(340, 250)
+        self.setMouseTracking(True)
+
+    def set_single_mode(self, single_mode):
+        self.single_mode = single_mode
+        self.position = QPointF(0.0, 0.0)
+        self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.active = True
+            self._update_position(event.localPos())
+
+    def mouseMoveEvent(self, event):
+        if self.active and event.buttons() & Qt.LeftButton:
+            self._update_position(event.localPos())
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.active:
+            self.active = False
+            self.position = QPointF(0.0, 0.0)
+            self.command_released.emit()
+            self.update()
+
+    def _update_position(self, position):
+        half_width = max(1.0, self.width() / 2.0 - 20.0)
+        half_height = max(1.0, self.height() / 2.0 - 20.0)
+        x_value = max(-1.0, min(1.0, (position.x() - self.width() / 2.0) / half_width))
+        y_value = max(-1.0, min(1.0, (self.height() / 2.0 - position.y()) / half_height))
+        if self.single_mode:
+            x_value = 0.0
+        self.position = QPointF(x_value, y_value)
+        self.command_changed.emit(x_value, y_value)
+        self.update()
+
+    def paintEvent(self, event):
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor('#edf1ee'))
+        painter.setPen(QPen(QColor('#aebbb3'), 1))
+        painter.drawLine(self.width() // 2, 12, self.width() // 2, self.height() - 12)
+        if not self.single_mode:
+            painter.drawLine(12, self.height() // 2, self.width() - 12, self.height() // 2)
+        center_x = self.width() / 2.0
+        center_y = self.height() / 2.0
+        travel_x = self.width() / 2.0 - 20.0
+        travel_y = self.height() / 2.0 - 20.0
+        knob_x = center_x + self.position.x() * travel_x
+        knob_y = center_y - self.position.y() * travel_y
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor('#227447') if self.active else QColor('#607269'))
+        painter.drawEllipse(QPointF(knob_x, knob_y), 16.0, 16.0)
+
+
+class ConfigDialog(QDialog):
+    def __init__(self, config_path, parent=None):
+        super().__init__(parent)
+        self.config_path = config_path
+        self.setWindowTitle('Edit shared robot configuration')
+        self.setMinimumWidth(480)
+        with open(config_path, encoding='utf-8') as config_file:
+            self.config = yaml.safe_load(config_file) or {}
+        velocity = self.config['velocity_control_node']['ros__parameters']
+        robot = self.config['two_wheels_robot_node']['ros__parameters']
+        gui = self.config['motor_test_gui']['ros__parameters']
+
+        layout = QFormLayout(self)
+        self.usb_dev = QLineEdit(str(velocity['usb_dev']))
+        self.max_check = self._integer(velocity['max_check'], 1, 255)
+        self.command_timeout = self._decimal(velocity['command_timeout'], 0.1, 30.0, 2)
+        self.wheel_base = self._decimal(robot['wheel_base'], 0.01, 10.0, 4)
+        self.wheel_radius = self._decimal(robot['R_wheel'], 0.001, 2.0, 4)
+        self.left_motor_id = self._integer(robot['left_motor_id'], 1, 255)
+        self.right_motor_id = self._integer(robot['right_motor_id'], 1, 255)
+        self.left_direction = self._direction(robot['left_direction'])
+        self.right_direction = self._direction(robot['right_direction'])
+        self.rpm_step = self._integer(gui['rpm_step'], 1, 330)
+        self.max_test_rpm = self._integer(gui['max_test_rpm'], 1, 330)
+        self.linear_step = self._decimal(gui['linear_step'], 0.001, 1.0, 3)
+        self.max_linear_speed = self._decimal(gui['max_linear_speed'], 0.01, 5.0, 3)
+        self.control_period = self._decimal(gui['control_period'], 0.02, 1.0, 3)
+        self.joystick_deadzone = self._decimal(gui['joystick_deadzone'], 0.0, 0.9, 2)
+
+        for label, widget in [
+            ('Serial device', self.usb_dev),
+            ('Maximum scanned ID', self.max_check),
+            ('Command timeout [s]', self.command_timeout),
+            ('Wheel base [m]', self.wheel_base),
+            ('Wheel radius [m]', self.wheel_radius),
+            ('Left motor ID', self.left_motor_id),
+            ('Right motor ID', self.right_motor_id),
+            ('Left positive direction', self.left_direction),
+            ('Right positive direction', self.right_direction),
+            ('RPM slew step', self.rpm_step),
+            ('Maximum test RPM', self.max_test_rpm),
+            ('Linear slew step [m/s]', self.linear_step),
+            ('Maximum linear speed [m/s]', self.max_linear_speed),
+            ('Control period [s]', self.control_period),
+            ('Joystick deadzone', self.joystick_deadzone),
+        ]:
+            layout.addRow(label, widget)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    @staticmethod
+    def _integer(value, minimum, maximum):
+        widget = QSpinBox()
+        widget.setRange(minimum, maximum)
+        widget.setValue(int(value))
+        return widget
+
+    @staticmethod
+    def _decimal(value, minimum, maximum, decimals):
+        widget = QDoubleSpinBox()
+        widget.setRange(minimum, maximum)
+        widget.setDecimals(decimals)
+        widget.setValue(float(value))
+        return widget
+
+    @staticmethod
+    def _direction(value):
+        widget = QComboBox()
+        widget.addItem('+1', 1)
+        widget.addItem('-1', -1)
+        widget.setCurrentIndex(0 if int(value) == 1 else 1)
+        return widget
+
+    def _save(self):
+        if self.left_motor_id.value() == self.right_motor_id.value():
+            QMessageBox.warning(self, 'Invalid configuration', 'Left and right IDs must differ.')
+            return
+        velocity = self.config['velocity_control_node']['ros__parameters']
+        robot = self.config['two_wheels_robot_node']['ros__parameters']
+        gui = self.config['motor_test_gui']['ros__parameters']
+        velocity.update({
+            'usb_dev': self.usb_dev.text().strip(),
+            'max_check': self.max_check.value(),
+            'command_timeout': self.command_timeout.value(),
+        })
+        robot.update({
+            'wheel_base': self.wheel_base.value(),
+            'R_wheel': self.wheel_radius.value(),
+            'left_motor_id': self.left_motor_id.value(),
+            'right_motor_id': self.right_motor_id.value(),
+            'left_direction': self.left_direction.currentData(),
+            'right_direction': self.right_direction.currentData(),
+        })
+        gui.update({
+            'usb_dev': velocity['usb_dev'],
+            'max_check': velocity['max_check'],
+            'command_timeout': velocity['command_timeout'],
+            'wheel_base': robot['wheel_base'],
+            'wheel_radius': robot['R_wheel'],
+            'left_motor_id': robot['left_motor_id'],
+            'right_motor_id': robot['right_motor_id'],
+            'left_direction': robot['left_direction'],
+            'right_direction': robot['right_direction'],
+            'rpm_step': self.rpm_step.value(),
+            'max_test_rpm': self.max_test_rpm.value(),
+            'linear_step': self.linear_step.value(),
+            'max_linear_speed': self.max_linear_speed.value(),
+            'control_period': self.control_period.value(),
+            'joystick_deadzone': self.joystick_deadzone.value(),
+        })
+        directory = os.path.dirname(os.path.abspath(self.config_path))
+        backup_path = self.config_path + '.bak'
+        descriptor, temporary_path = tempfile.mkstemp(
+            prefix='.robot-', suffix='.yaml', dir=directory)
+        try:
+            with os.fdopen(descriptor, 'w', encoding='utf-8') as config_file:
+                yaml.safe_dump(self.config, config_file, sort_keys=False)
+                config_file.flush()
+                os.fsync(config_file.fileno())
+            shutil.copy2(self.config_path, backup_path)
+            os.replace(temporary_path, self.config_path)
+        finally:
+            if os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+        self.accept()
+
+
+class MotorTestBridge(Node):
+    def __init__(self):
+        super().__init__('motor_test_gui')
+        self.config_file = self.declare_parameter('config_file', '').value
+        self.usb_dev = self.declare_parameter('usb_dev', '/dev/ttyUSB0').value
+        self.max_check = self.declare_parameter('max_check', 2).value
+        self.command_timeout = self.declare_parameter('command_timeout', 2.0).value
+        self.wheel_base = self.declare_parameter('wheel_base', 0.207).value
+        self.wheel_radius = self.declare_parameter('wheel_radius', 0.051).value
+        self.left_motor_id = self.declare_parameter('left_motor_id', 1).value
+        self.right_motor_id = self.declare_parameter('right_motor_id', 2).value
+        self.left_direction = self.declare_parameter('left_direction', 1).value
+        self.right_direction = self.declare_parameter('right_direction', -1).value
+        self.rpm_step = self.declare_parameter('rpm_step', 5).value
+        self.max_test_rpm = self.declare_parameter('max_test_rpm', 100).value
+        self.linear_step = self.declare_parameter('linear_step', 0.02).value
+        self.angular_step = self.declare_parameter('angular_step', 0.1).value
+        self.max_linear_speed = self.declare_parameter('max_linear_speed', 0.5).value
+        self.max_angular_speed = self.declare_parameter('max_angular_speed', 2.0).value
+        self.control_period = self.declare_parameter('control_period', 0.1).value
+        self.joystick_deadzone = self.declare_parameter('joystick_deadzone', 0.1).value
+        self.joystick_timeout = self.declare_parameter('gui_joystick_timeout', 0.5).value
+
+        qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
+        self.rpm_publisher = self.create_publisher(
+            Int16MultiArray, '/ddsm115/rpm_cmd', qos)
+        self.brake_publisher = self.create_publisher(Bool, '/ddsm115/brake', qos)
+        self.cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.freewheel_client = self.create_client(SetBool, '/ddsm115/set_freewheel')
+
+        self.create_subscription(
+            Int16MultiArray, '/ddsm115/rpm_fb', self._rpm_callback, qos)
+        self.create_subscription(
+            Float32MultiArray, '/ddsm115/cur_fb', self._current_callback, qos)
+        self.create_subscription(
+            Int8MultiArray, '/ddsm115/temp_fb', self._temperature_callback, qos)
+        self.create_subscription(
+            Int8MultiArray, '/ddsm115/error', self._error_callback, qos)
+        self.create_subscription(
+            Int8MultiArray, '/ddsm115/online_id', self._online_callback, qos)
+        self.create_subscription(Odometry, '/odom', self._odometry_callback, 10)
+        self.create_subscription(Joy, '/joy', self._joystick_callback, 10)
+
+        self.rpm_feedback = []
+        self.current_feedback = []
+        self.temperature_feedback = []
+        self.error_feedback = []
+        self.online_ids = []
+        self.last_feedback_time = 0.0
+        self.odometry = None
+        self.joystick_axes = []
+        self.last_joystick_time = 0.0
+
+    def _rpm_callback(self, message):
+        self.rpm_feedback = list(message.data)
+        self.last_feedback_time = time.monotonic()
+
+    def _current_callback(self, message):
+        self.current_feedback = list(message.data)
+
+    def _temperature_callback(self, message):
+        self.temperature_feedback = list(message.data)
+
+    def _error_callback(self, message):
+        self.error_feedback = list(message.data)
+
+    def _online_callback(self, message):
+        self.online_ids = [int(motor_id) for motor_id in message.data]
+
+    def _odometry_callback(self, message):
+        self.odometry = message
+
+    def _joystick_callback(self, message):
+        self.joystick_axes = list(message.axes)
+        self.last_joystick_time = time.monotonic()
+
+    def motor_direction(self, motor_id):
+        if motor_id == self.left_motor_id:
+            return self.left_direction
+        if motor_id == self.right_motor_id:
+            return self.right_direction
+        return 1
+
+    def publish_single_rpm(self, motor_id, rpm):
+        command_size = max(self.max_check, motor_id)
+        message = Int16MultiArray()
+        message.data = [0] * command_size
+        message.data[motor_id - 1] = int(rpm * self.motor_direction(motor_id))
+        self.rpm_publisher.publish(message)
+
+    def publish_stop(self):
+        rpm_message = Int16MultiArray()
+        rpm_message.data = [0] * self.max_check
+        self.rpm_publisher.publish(rpm_message)
+        self.cmd_vel_publisher.publish(Twist())
+
+    def publish_twist(self, linear, angular):
+        message = Twist()
+        message.linear.x = float(linear)
+        message.angular.z = float(angular)
+        self.cmd_vel_publisher.publish(message)
+
+    def publish_brake(self, enabled):
+        message = Bool()
+        message.data = enabled
+        self.brake_publisher.publish(message)
+
+    def request_freewheel(self, enabled, callback=None):
+        if not self.freewheel_client.service_is_ready():
+            if callback:
+                callback(False, 'Freewheel service is not available')
+            return None
+        request = SetBool.Request()
+        request.data = enabled
+        future = self.freewheel_client.call_async(request)
+        if callback:
+            def done(completed):
+                try:
+                    response = completed.result()
+                    callback(response.success, response.message)
+                except Exception as error:
+                    callback(False, str(error))
+            future.add_done_callback(done)
+        return future
+
+
+class MotorTestWindow(QMainWindow):
+    def __init__(self, bridge):
+        super().__init__()
+        self.bridge = bridge
+        self.single_rpm = 0
+        self.target_single_rpm = 0
+        self.linear_speed = 0.0
+        self.target_linear_speed = 0.0
+        self.angular_speed = 0.0
+        self.target_angular_speed = 0.0
+        self.joystick_neutral_required = True
+        self.state_change_in_progress = False
+        self.last_online_ids = []
+
+        self.setWindowTitle('DDSM115 Motor Test')
+        self.setMinimumSize(1040, 1000)
+        self._build_ui()
+        self._apply_style()
+        QApplication.instance().installEventFilter(self)
+
+        self.ros_timer = QTimer(self)
+        self.ros_timer.timeout.connect(self._spin_ros)
+        self.ros_timer.start(10)
+
+        self.control_timer = QTimer(self)
+        self.control_timer.timeout.connect(self._control_tick)
+        self.control_timer.start(max(20, int(self.bridge.control_period * 1000)))
+
+        self.display_timer = QTimer(self)
+        self.display_timer.timeout.connect(self._refresh_display)
+        self.display_timer.start(100)
+
+    def _build_ui(self):
+        central = QWidget()
+        root = QVBoxLayout(central)
+        root.setContentsMargins(22, 18, 22, 18)
+        root.setSpacing(14)
+
+        header = QHBoxLayout()
+        title = QLabel('DDSM115 Motor Test Console')
+        title.setObjectName('title')
+        self.connection_label = QLabel('WAITING FOR FEEDBACK')
+        self.connection_label.setObjectName('statusBadge')
+        header.addWidget(title)
+        header.addStretch()
+        header.addWidget(self.connection_label)
+        root.addLayout(header)
+
+        upper = QHBoxLayout()
+        upper.setSpacing(14)
+        upper.addWidget(self._build_parameters(), 2)
+        upper.addWidget(self._build_state_controls(), 1)
+        root.addLayout(upper)
+
+        root.addWidget(self._build_sensor_table())
+
+        lower = QHBoxLayout()
+        lower.setSpacing(14)
+        lower.addWidget(self._build_drive_controls(), 2)
+        lower.addWidget(self._build_odometry(), 1)
+        root.addLayout(lower, 1)
+
+        self.message_label = QLabel('Ready. Commands start from neutral (zero).')
+        self.message_label.setObjectName('messageBar')
+        root.addWidget(self.message_label)
+        self.setCentralWidget(central)
+
+    def _build_parameters(self):
+        group = QGroupBox('Loaded configuration')
+        layout = QGridLayout(group)
+        values = [
+            ('Config file', self.bridge.config_file or '(not provided)'),
+            ('Serial device', self.bridge.usb_dev),
+            ('Scan IDs', f'1 - {self.bridge.max_check}'),
+            ('Command timeout', f'{self.bridge.command_timeout:.1f} s'),
+            ('Wheel base', f'{self.bridge.wheel_base:.3f} m'),
+            ('Wheel radius', f'{self.bridge.wheel_radius:.3f} m'),
+            (
+                'Left motor',
+                f'ID {self.bridge.left_motor_id} / dir {self.bridge.left_direction:+d}',
+            ),
+            (
+                'Right motor',
+                f'ID {self.bridge.right_motor_id} / dir {self.bridge.right_direction:+d}',
+            ),
+            ('RPM step / limit', f'{self.bridge.rpm_step} / {self.bridge.max_test_rpm} rpm'),
+        ]
+        for index, (name, value) in enumerate(values):
+            name_label = QLabel(name)
+            name_label.setObjectName('muted')
+            value_label = QLabel(value)
+            value_label.setObjectName('parameterValue')
+            value_label.setToolTip(value)
+            row = index // 2
+            column = (index % 2) * 2
+            layout.addWidget(name_label, row, column)
+            layout.addWidget(value_label, row, column + 1)
+        edit_button = QPushButton('Edit shared YAML')
+        edit_button.clicked.connect(self._edit_config)
+        edit_button.setEnabled(bool(self.bridge.config_file))
+        layout.addWidget(edit_button, (len(values) + 1) // 2, 0, 1, 4)
+        return group
+
+    def _build_state_controls(self):
+        group = QGroupBox('Motor state')
+        layout = QHBoxLayout(group)
+        self.state_group = QButtonGroup(self)
+        self.drive_button = QRadioButton('Drive')
+        self.freewheel_button = QRadioButton('Free')
+        self.brake_button = QRadioButton('Brake')
+        for state_id, button in enumerate([
+            self.drive_button, self.freewheel_button, self.brake_button,
+        ]):
+            self.state_group.addButton(button, state_id)
+            layout.addWidget(button)
+        self.drive_button.setChecked(True)
+        self.state_group.buttonClicked[int].connect(self._state_selected)
+        layout.addStretch()
+        return group
+
+    def _build_sensor_table(self):
+        group = QGroupBox('Motor feedback')
+        layout = QVBoxLayout(group)
+        self.sensor_table = QTableWidget(self.bridge.max_check, 6)
+        self.sensor_table.setHorizontalHeaderLabels([
+            'Motor ID', 'Online', 'RPM', 'Current [A]', 'Temp [C]', 'Error'])
+        self.sensor_table.verticalHeader().setVisible(False)
+        self.sensor_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.sensor_table.setSelectionMode(QTableWidget.NoSelection)
+        self.sensor_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.sensor_table.setFixedHeight(112)
+        for motor_id in range(1, self.bridge.max_check + 1):
+            self.sensor_table.setItem(motor_id - 1, 0, QTableWidgetItem(str(motor_id)))
+        layout.addWidget(self.sensor_table)
+        return group
+
+    def _build_drive_controls(self):
+        group = QGroupBox('Gradual drive control')
+        layout = QVBoxLayout(group)
+
+        selectors = QHBoxLayout()
+        selectors.addWidget(QLabel('Mode'))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(['Single motor', 'Differential drive'])
+        self.mode_combo.currentIndexChanged.connect(self._mode_changed)
+        selectors.addWidget(self.mode_combo)
+        selectors.addWidget(QLabel('Input'))
+        self.input_combo = QComboBox()
+        self.input_combo.addItems(['Mouse pad', 'Joystick'])
+        self.input_combo.currentIndexChanged.connect(self._input_changed)
+        selectors.addWidget(self.input_combo)
+        selectors.addWidget(QLabel('Motor'))
+        self.motor_combo = QComboBox()
+        for motor_id in range(1, self.bridge.max_check + 1):
+            self.motor_combo.addItem(f'ID {motor_id}', motor_id)
+        selectors.addWidget(self.motor_combo)
+        selectors.addStretch()
+        layout.addLayout(selectors)
+
+        self.command_label = QLabel('0 rpm')
+        self.command_label.setAlignment(Qt.AlignCenter)
+        self.command_label.setObjectName('commandValue')
+        layout.addWidget(self.command_label)
+
+        self.control_pad = ControlPad()
+        self.control_pad.command_changed.connect(self._mouse_command)
+        self.control_pad.command_released.connect(self._stop)
+        layout.addWidget(self.control_pad, 1)
+
+        controls = QHBoxLayout()
+        self.stop_button = QPushButton('STOP / NEUTRAL')
+        self.stop_button.setObjectName('stopButton')
+        self.stop_button.clicked.connect(self._stop)
+        controls.addStretch()
+        controls.addWidget(self.stop_button)
+        controls.addStretch()
+        layout.addLayout(controls)
+
+        self.control_hint = QLabel(
+            'Hold the left mouse button and drag. Releasing the pad or a rotation '
+            'pad sends zero immediately. Space also stops.')
+        self.control_hint.setWordWrap(True)
+        self.control_hint.setObjectName('muted')
+        layout.addWidget(self.control_hint)
+        self._update_mode_controls()
+        return group
+
+    def _build_odometry(self):
+        group = QGroupBox('Odometry')
+        layout = QGridLayout(group)
+        self.odom_values = {}
+        for row, name in enumerate(['x', 'y', 'yaw', 'linear', 'angular']):
+            label = QLabel(name)
+            label.setObjectName('muted')
+            value = QLabel('--')
+            value.setObjectName('odomValue')
+            layout.addWidget(label, row, 0)
+            layout.addWidget(value, row, 1)
+            self.odom_values[name] = value
+        return group
+
+    def _apply_style(self):
+        self.setFont(QFont('DejaVu Sans', 10))
+        self.setStyleSheet('''
+            QMainWindow, QWidget { background: #f4f6f4; color: #18231d; }
+            QLabel#title { font-size: 23px; font-weight: 700; color: #10271b; }
+            QLabel#statusBadge {
+                background: #dfe5e1; color: #4d5b52; padding: 7px 12px;
+                border-radius: 4px; font-weight: 700;
+            }
+            QLabel#statusBadge[online="true"] {
+                background: #ccebd8; color: #155d35;
+            }
+            QLabel#muted { color: #68736c; font-size: 9pt; }
+            QLabel#parameterValue, QLabel#odomValue {
+                font-weight: 700; color: #173f2a; padding-right: 14px;
+            }
+            QLabel#commandValue {
+                font-family: "DejaVu Sans Mono"; font-size: 25px;
+                font-weight: 700; padding: 12px; background: #e7ede9;
+                border: 1px solid #c8d2cb;
+            }
+            QLabel#messageBar {
+                background: #26352c; color: #f5f8f6; padding: 9px 12px;
+                border-radius: 3px;
+            }
+            QGroupBox {
+                background: #ffffff; border: 1px solid #ccd5cf;
+                border-radius: 6px; margin-top: 12px; padding: 13px;
+                font-weight: 700;
+            }
+            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; }
+            QPushButton {
+                background: #e6ece8; border: 1px solid #b8c5bd;
+                border-radius: 4px; min-height: 34px; padding: 5px 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: #d8e4dc; }
+            QPushButton:pressed { background: #b9d2c1; }
+            QPushButton#stopButton {
+                background: #b72d2d; color: white; border-color: #8f2020;
+            }
+            QPushButton#stopButton:hover { background: #9f2424; }
+            QComboBox {
+                background: white; border: 1px solid #b8c5bd;
+                border-radius: 3px; padding: 5px 9px; min-width: 125px;
+            }
+            QCheckBox { spacing: 9px; padding: 4px; }
+            QCheckBox::indicator { width: 18px; height: 18px; }
+            QTableWidget {
+                background: white; alternate-background-color: #f2f5f3;
+                border: 0; gridline-color: #dce3de;
+            }
+            QHeaderView::section {
+                background: #27382e; color: white; padding: 7px;
+                border: 0; font-weight: 700;
+            }
+        ''')
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.KeyPress and not event.isAutoRepeat():
+            key = event.key()
+            if key == Qt.Key_Space:
+                self._stop()
+                return True
+        return super().eventFilter(watched, event)
+
+    def _spin_ros(self):
+        rclpy.spin_once(self.bridge, timeout_sec=0.0)
+
+    def _control_tick(self):
+        if not self._normal_control_enabled():
+            return
+        if self.input_combo.currentIndex() == 1:
+            self._apply_joystick()
+        self.single_rpm = self._approach(
+            self.single_rpm, self.target_single_rpm, self.bridge.rpm_step)
+        self.linear_speed = self._approach(
+            self.linear_speed, self.target_linear_speed, self.bridge.linear_step)
+        self.angular_speed = self._approach(
+            self.angular_speed, self.target_angular_speed, self.bridge.angular_step)
+        if self.mode_combo.currentIndex() == 0:
+            self.bridge.publish_single_rpm(self.motor_combo.currentData(), self.single_rpm)
+        else:
+            self.bridge.publish_twist(self.linear_speed, self.angular_speed)
+        self._update_command_label()
+
+    def _mouse_command(self, horizontal, vertical):
+        if self.input_combo.currentIndex() != 0 or not self._normal_control_enabled():
+            return
+        if self.mode_combo.currentIndex() == 0:
+            self.target_single_rpm = round(vertical * self.bridge.max_test_rpm)
+        else:
+            self.target_linear_speed = vertical * self.bridge.max_linear_speed
+            self.target_angular_speed = -horizontal * self.bridge.max_angular_speed
+
+    def _apply_joystick(self):
+        axes = self.bridge.joystick_axes
+        fresh = (
+            time.monotonic() - self.bridge.last_joystick_time <
+            self.bridge.joystick_timeout)
+        throttle = axes[1] if fresh and len(axes) > 1 else 0.0
+        steering = axes[3] if fresh and len(axes) > 3 else 0.0
+        if abs(throttle) < self.bridge.joystick_deadzone:
+            throttle = 0.0
+        if abs(steering) < self.bridge.joystick_deadzone:
+            steering = 0.0
+        if self.joystick_neutral_required:
+            if throttle == 0.0 and steering == 0.0:
+                self.joystick_neutral_required = False
+            return
+        if throttle == 0.0 and steering == 0.0:
+            self._stop()
+            self.joystick_neutral_required = False
+            return
+
+        if self.mode_combo.currentIndex() == 0:
+            self.target_single_rpm = round(throttle * self.bridge.max_test_rpm)
+        else:
+            self.target_linear_speed = throttle * self.bridge.max_linear_speed
+            self.target_angular_speed = steering * self.bridge.max_angular_speed
+
+    @staticmethod
+    def _approach(value, target, step):
+        if value < target:
+            return min(target, value + step)
+        if value > target:
+            return max(target, value - step)
+        return value
+
+    def _normal_control_enabled(self):
+        return self.drive_button.isChecked() and not self.state_change_in_progress
+
+    def _stop(self):
+        self.single_rpm = 0
+        self.target_single_rpm = 0
+        self.linear_speed = 0.0
+        self.target_linear_speed = 0.0
+        self.angular_speed = 0.0
+        self.target_angular_speed = 0.0
+        if hasattr(self, 'control_pad'):
+            self.control_pad.active = False
+            self.control_pad.position = QPointF(0.0, 0.0)
+            self.control_pad.update()
+        if hasattr(self, 'input_combo') and self.input_combo.currentIndex() == 1:
+            self.joystick_neutral_required = True
+        self.bridge.publish_stop()
+        self._update_command_label()
+        self.message_label.setText('Neutral command sent.')
+
+    def _mode_changed(self):
+        self._stop()
+        self._update_mode_controls()
+
+    def _input_changed(self):
+        self._stop()
+        self._update_mode_controls()
+
+    def _update_mode_controls(self):
+        single_mode = self.mode_combo.currentIndex() == 0
+        self.motor_combo.setEnabled(single_mode)
+        self.control_pad.set_single_mode(single_mode)
+        self.control_pad.setEnabled(self.input_combo.currentIndex() == 0)
+        self._update_command_label()
+
+    def _update_command_label(self):
+        if self.mode_combo.currentIndex() == 0:
+            self.command_label.setText(f'{self.single_rpm:+d} rpm')
+        else:
+            self.command_label.setText(
+                f'linear {self.linear_speed:+.2f} m/s   |   '
+                f'angular {self.angular_speed:+.2f} rad/s')
+
+    def _set_state_button(self, state_id):
+        button = self.state_group.button(state_id)
+        self.state_group.blockSignals(True)
+        button.setChecked(True)
+        self.state_group.blockSignals(False)
+
+    def _state_selected(self, state_id):
+        if self.state_change_in_progress:
+            return
+        self._stop()
+        if state_id == 1:
+            self.bridge.publish_brake(False)
+            self._request_freewheel(True, 1)
+        else:
+            self._request_freewheel(False, state_id)
+
+    def _request_freewheel(self, enabled, requested_state):
+        self.state_change_in_progress = True
+        for button in self.state_group.buttons():
+            button.setEnabled(False)
+        self.message_label.setText('Changing motor mode...')
+
+        def completed(success, message):
+            self.state_change_in_progress = False
+            for button in self.state_group.buttons():
+                button.setEnabled(True)
+            if success:
+                if requested_state == 2:
+                    self.bridge.publish_brake(True)
+                    self.message_label.setText('Brake enabled.')
+                else:
+                    self.bridge.publish_brake(False)
+                    self.message_label.setText(
+                        'Freewheel enabled.' if requested_state == 1 else
+                        'Drive enabled at zero command.')
+            else:
+                self._set_state_button(0)
+                self.bridge.publish_brake(False)
+                self.message_label.setText(f'State change failed: {message}')
+        self.bridge.request_freewheel(enabled, completed)
+
+    def _edit_config(self):
+        self._stop()
+        try:
+            dialog = ConfigDialog(self.bridge.config_file, self)
+        except (OSError, KeyError, TypeError, yaml.YAMLError) as error:
+            QMessageBox.critical(self, 'Cannot open configuration', str(error))
+            return
+        if dialog.exec_() == QDialog.Accepted:
+            QMessageBox.information(
+                self,
+                'Configuration saved',
+                'The YAML and .bak backup were saved. Restart this launch to apply '
+                'the new values to every node.')
+
+    def _refresh_display(self):
+        online = time.monotonic() - self.bridge.last_feedback_time < 0.5
+        self.connection_label.setText('FEEDBACK ONLINE' if online else 'WAITING FOR FEEDBACK')
+        self.connection_label.setProperty('online', online)
+        self.connection_label.style().unpolish(self.connection_label)
+        self.connection_label.style().polish(self.connection_label)
+
+        if self.bridge.online_ids != self.last_online_ids:
+            self.last_online_ids = list(self.bridge.online_ids)
+            selected_id = self.motor_combo.currentData()
+            self.motor_combo.clear()
+            ids = self.bridge.online_ids or list(range(1, self.bridge.max_check + 1))
+            for motor_id in ids:
+                self.motor_combo.addItem(f'ID {motor_id}', motor_id)
+            selected_index = self.motor_combo.findData(selected_id)
+            if selected_index >= 0:
+                self.motor_combo.setCurrentIndex(selected_index)
+
+        for motor_id in range(1, self.bridge.max_check + 1):
+            index = motor_id - 1
+            values = [
+                'yes' if motor_id in self.bridge.online_ids else 'no',
+                self._value(self.bridge.rpm_feedback, index, '0'),
+                self._value(self.bridge.current_feedback, index, '0.00', '.2f'),
+                self._value(self.bridge.temperature_feedback, index, '--'),
+                self._error_text(self._numeric(self.bridge.error_feedback, index)),
+            ]
+            for column, value in enumerate(values, start=1):
+                self.sensor_table.setItem(index, column, QTableWidgetItem(value))
+
+        if self.bridge.odometry is not None:
+            odometry = self.bridge.odometry
+            orientation = odometry.pose.pose.orientation
+            yaw = math.atan2(
+                2.0 * (orientation.w * orientation.z + orientation.x * orientation.y),
+                1.0 - 2.0 * (orientation.y ** 2 + orientation.z ** 2))
+            odom_values = {
+                'x': f'{odometry.pose.pose.position.x:.3f} m',
+                'y': f'{odometry.pose.pose.position.y:.3f} m',
+                'yaw': f'{yaw:.3f} rad',
+                'linear': f'{odometry.twist.twist.linear.x:.3f} m/s',
+                'angular': f'{odometry.twist.twist.angular.z:.3f} rad/s',
+            }
+            for name, value in odom_values.items():
+                self.odom_values[name].setText(value)
+
+    @staticmethod
+    def _numeric(values, index):
+        return values[index] if index < len(values) else 0
+
+    @classmethod
+    def _value(cls, values, index, missing, value_format=None):
+        if index >= len(values):
+            return missing
+        value = values[index]
+        return format(value, value_format) if value_format else str(value)
+
+    @staticmethod
+    def _error_text(error):
+        error &= 0xFF
+        if error == 0:
+            return 'OK'
+        names = []
+        for bit, name in [
+            (0x01, 'sensor'),
+            (0x02, 'overcurrent'),
+            (0x04, 'phase'),
+            (0x08, 'stall'),
+            (0x10, 'trouble'),
+        ]:
+            if error & bit:
+                names.append(name)
+        return f'0x{error:02X} ' + ', '.join(names)
+
+    def closeEvent(self, event):
+        self._stop()
+        self.bridge.publish_brake(False)
+        future = self.bridge.request_freewheel(False)
+        if future is not None:
+            rclpy.spin_until_future_complete(self.bridge, future, timeout_sec=1.0)
+        self.bridge.publish_stop()
+        event.accept()
+
+
+def main():
+    rclpy.init()
+    bridge = MotorTestBridge()
+    application = QApplication(sys.argv)
+    application.setApplicationName('DDSM115 Motor Test')
+    window = MotorTestWindow(bridge)
+    window.show()
+    exit_code = application.exec_()
+    bridge.destroy_node()
+    rclpy.shutdown()
+    sys.exit(exit_code)
+
+
+if __name__ == '__main__':
+    main()

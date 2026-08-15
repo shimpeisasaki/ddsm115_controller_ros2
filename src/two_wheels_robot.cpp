@@ -5,6 +5,7 @@
 #include <memory>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
@@ -29,6 +30,11 @@ public:
     wheel_radius_(declare_parameter("R_wheel", 0.051)),
     publish_tf_(declare_parameter("pub_tf", false)),
     joystick_timeout_(declare_parameter("joystick_timeout", 2.0)),
+    enable_joystick_(declare_parameter("enable_joystick", true)),
+    left_motor_id_(declare_parameter("left_motor_id", 1)),
+    right_motor_id_(declare_parameter("right_motor_id", 2)),
+    left_direction_(declare_parameter("left_direction", 1)),
+    right_direction_(declare_parameter("right_direction", -1)),
     transform_broadcaster_(*this)
   {
     if (wheel_base_ <= 0.0) {
@@ -40,11 +46,22 @@ public:
     if (joystick_timeout_ <= 0.0) {
       throw std::invalid_argument("joystick_timeout must be greater than zero");
     }
+    if (left_motor_id_ < 1 || right_motor_id_ < 1 || left_motor_id_ == right_motor_id_) {
+      throw std::invalid_argument("left_motor_id and right_motor_id must be distinct positive IDs");
+    }
+    if (std::abs(left_direction_) != 1 || std::abs(right_direction_) != 1) {
+      throw std::invalid_argument("motor directions must be 1 or -1");
+    }
     RCLCPP_INFO(get_logger(), "Start two_wheels_robot_node");
     RCLCPP_INFO(get_logger(), "wheel_base: %.3f", wheel_base_);
     RCLCPP_INFO(get_logger(), "R_wheel: %.3f", wheel_radius_);
     RCLCPP_INFO(get_logger(), "pub_tf: %s", publish_tf_ ? "true" : "false");
     RCLCPP_INFO(get_logger(), "joystick_timeout: %.3f s", joystick_timeout_);
+    RCLCPP_INFO(get_logger(), "enable_joystick: %s", enable_joystick_ ? "true" : "false");
+    RCLCPP_INFO(
+      get_logger(), "left motor: ID %d, direction %d", left_motor_id_, left_direction_);
+    RCLCPP_INFO(
+      get_logger(), "right motor: ID %d, direction %d", right_motor_id_, right_direction_);
 
     auto motor_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort();
     rpm_publisher_ =
@@ -53,15 +70,19 @@ public:
     rpm_subscription_ = create_subscription<std_msgs::msg::Int16MultiArray>(
       "/ddsm115/rpm_fb", motor_qos,
       [this](const std_msgs::msg::Int16MultiArray & message) {
-        if (message.data.size() >= 2) {
-          left_rpm_ = message.data[0];
-          right_rpm_ = -message.data[1];
+        const auto required_size = static_cast<std::size_t>(
+          std::max(left_motor_id_, right_motor_id_));
+        if (message.data.size() >= required_size) {
+          left_rpm_ = message.data[left_motor_id_ - 1] * left_direction_;
+          right_rpm_ = message.data[right_motor_id_ - 1] * right_direction_;
         }
       });
     velocity_subscription_ = create_subscription<geometry_msgs::msg::Twist>(
       "/cmd_vel", 10, std::bind(&TwoWheelsRobot::velocity_command, this, std::placeholders::_1));
-    joystick_subscription_ = create_subscription<sensor_msgs::msg::Joy>(
-      "/joy", 10, std::bind(&TwoWheelsRobot::joystick_command, this, std::placeholders::_1));
+    if (enable_joystick_) {
+      joystick_subscription_ = create_subscription<sensor_msgs::msg::Joy>(
+        "/joy", 10, std::bind(&TwoWheelsRobot::joystick_command, this, std::placeholders::_1));
+    }
     timer_ = create_wall_timer(10ms, std::bind(&TwoWheelsRobot::update, this));
   }
 
@@ -101,7 +122,9 @@ private:
   void publish_rpm(std::int16_t left, std::int16_t right)
   {
     std_msgs::msg::Int16MultiArray message;
-    message.data = {left, right};
+    message.data.resize(std::max(left_motor_id_, right_motor_id_), 0);
+    message.data[left_motor_id_ - 1] = left * left_direction_;
+    message.data[right_motor_id_ - 1] = right * right_direction_;
     rpm_publisher_->publish(message);
   }
 
@@ -131,7 +154,7 @@ private:
     }
     publish_rpm(
       static_cast<std::int16_t>(linear_to_rpm(left_velocity)),
-      static_cast<std::int16_t>(-linear_to_rpm(right_velocity)));
+      static_cast<std::int16_t>(linear_to_rpm(right_velocity)));
   }
 
   void joystick_command(const sensor_msgs::msg::Joy & message)
@@ -165,7 +188,7 @@ private:
         const auto mixed = mix_axes(steering_, throttle_);
         left = static_cast<std::int16_t>(map_with_limit(mixed.first, -200.0, 200.0, -150.0, 150.0));
         right =
-          static_cast<std::int16_t>(map_with_limit(mixed.second, -200.0, 200.0, 150.0, -150.0));
+          static_cast<std::int16_t>(map_with_limit(mixed.second, -200.0, 200.0, -150.0, 150.0));
       }
       publish_rpm(left, right);
     }
@@ -233,6 +256,11 @@ private:
   double wheel_radius_;
   bool publish_tf_;
   double joystick_timeout_;
+  bool enable_joystick_;
+  int left_motor_id_;
+  int right_motor_id_;
+  int left_direction_;
+  int right_direction_;
   double left_rpm_{0.0};
   double right_rpm_{0.0};
   double x_{0.0};

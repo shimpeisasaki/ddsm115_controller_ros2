@@ -73,7 +73,7 @@ public:
       });
     brake_subscription_ = create_subscription<std_msgs::msg::Bool>(
       "/ddsm115/brake", qos,
-      [this](const std_msgs::msg::Bool & message) {brake_enabled_ = message.data;});
+      [this](const std_msgs::msg::Bool & message) {set_brake_enabled(message.data);});
     freewheel_service_ = create_service<std_srvs::srv::SetBool>(
       "/ddsm115/set_freewheel",
       std::bind(
@@ -97,12 +97,30 @@ private:
 
   void send_rpm_commands()
   {
-    brake_enabled_ = false;
     for (std::size_t index = 0; index < rpm_commands_.size(); ++index) {
       const int id = static_cast<int>(index) + 1;
       if (rpm_commands_[index].has_value() && is_online(id)) {
         driver_.send_rpm(id, *rpm_commands_[index]);
       }
+    }
+  }
+
+  void set_brake_enabled(bool enabled)
+  {
+    try {
+      if (enabled && freewheel_enabled_) {
+        for (const int id : online_ids_) {
+          driver_.send_current(id, 0.0F);
+          RCLCPP_INFO(get_logger(), "%s", driver_.set_drive_mode(id, 2).c_str());
+        }
+        freewheel_enabled_ = false;
+      }
+      std::fill(rpm_commands_.begin(), rpm_commands_.end(), std::int16_t{0});
+      brake_enabled_ = enabled;
+      last_command_time_ = std::chrono::steady_clock::now();
+      RCLCPP_INFO(get_logger(), "Brake %s", enabled ? "enabled" : "released");
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(get_logger(), "Failed to change brake state: %s", error.what());
     }
   }
 
@@ -112,6 +130,8 @@ private:
   {
     try {
       if (request->data) {
+        std::fill(rpm_commands_.begin(), rpm_commands_.end(), std::int16_t{0});
+        brake_enabled_ = false;
         for (const int id : online_ids_) {
           RCLCPP_INFO(get_logger(), "%s", driver_.set_drive_mode(id, 1).c_str());
           driver_.send_current(id, 0.0F);
@@ -144,17 +164,15 @@ private:
     try {
       if (freewheel_enabled_) {
         // Keep the zero-current command active without sending velocity or brake commands.
+      } else if (brake_enabled_) {
+        for (const int id : online_ids_) {
+          driver_.set_brake(id);
+        }
       } else if (std::chrono::steady_clock::now() - last_command_time_ > command_timeout_) {
         for (const int id : online_ids_) {
-          if (brake_enabled_) {
-            driver_.set_brake(id);
-          } else {
-            rpm_commands_[id - 1] = 0;
-          }
+          rpm_commands_[id - 1] = 0;
         }
-        if (!brake_enabled_) {
-          send_rpm_commands();
-        }
+        send_rpm_commands();
       } else {
         send_rpm_commands();
       }
