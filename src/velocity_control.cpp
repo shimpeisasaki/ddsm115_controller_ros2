@@ -178,6 +178,7 @@ private:
       }
 
       for (const int id : online_ids_) {
+        rpm_feedback_[id - 1] = 0;
         const auto feedback = driver_.get_motor_feedback(id);
         if (feedback.id >= 0) {
           rpm_feedback_[id - 1] = feedback.rpm;

@@ -34,7 +34,8 @@ target_link_libraries(velocity_control motor_control)
 ament_target_dependencies(velocity_control rclcpp std_msgs std_srvs)
 
 add_executable(two_wheels_robot src/two_wheels_robot.cpp)
-ament_target_dependencies(two_wheels_robot geometry_msgs nav_msgs rclcpp sensor_msgs std_msgs tf2 tf2_ros)
+ament_target_dependencies(
+  two_wheels_robot geometry_msgs nav_msgs rclcpp sensor_msgs std_msgs std_srvs tf2 tf2_ros)
 target_compile_features(two_wheels_robot PUBLIC cxx_std_17)
 
 install(DIRECTORY include/ DESTINATION include)

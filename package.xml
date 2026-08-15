@@ -10,6 +10,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>geometry_msgs</depend>
+  <exec_depend>joy</exec_depend>
   <depend>nav_msgs</depend>
   <depend>rclcpp</depend>
   <exec_depend>rclpy</exec_depend>

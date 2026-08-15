@@ -35,6 +35,12 @@ def generate_launch_description():
             description='Seconds without an RPM command before stopping',
         ),
         Node(
+            package='joy',
+            executable='joy_node',
+            name='joy_node',
+            output='screen',
+        ),
+        Node(
             package='ddsm115_controller',
             executable='velocity_control',
             name='velocity_control_node',

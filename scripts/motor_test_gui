@@ -126,6 +126,7 @@ class ConfigDialog(QDialog):
         self.command_timeout = self._decimal(velocity['command_timeout'], 0.1, 30.0, 2)
         self.wheel_base = self._decimal(robot['wheel_base'], 0.01, 10.0, 4)
         self.wheel_radius = self._decimal(robot['R_wheel'], 0.001, 2.0, 4)
+        self.feedback_timeout = self._decimal(robot['feedback_timeout'], 0.02, 5.0, 2)
         self.left_motor_id = self._integer(robot['left_motor_id'], 1, 255)
         self.right_motor_id = self._integer(robot['right_motor_id'], 1, 255)
         self.left_direction = self._direction(robot['left_direction'])
@@ -143,6 +144,7 @@ class ConfigDialog(QDialog):
             ('Command timeout [s]', self.command_timeout),
             ('Wheel base [m]', self.wheel_base),
             ('Wheel radius [m]', self.wheel_radius),
+            ('Feedback timeout [s]', self.feedback_timeout),
             ('Left motor ID', self.left_motor_id),
             ('Right motor ID', self.right_motor_id),
             ('Left positive direction', self.left_direction),
@@ -198,6 +200,7 @@ class ConfigDialog(QDialog):
         robot.update({
             'wheel_base': self.wheel_base.value(),
             'R_wheel': self.wheel_radius.value(),
+            'feedback_timeout': self.feedback_timeout.value(),
             'left_motor_id': self.left_motor_id.value(),
             'right_motor_id': self.right_motor_id.value(),
             'left_direction': self.left_direction.currentData(),
@@ -292,6 +295,7 @@ class MotorTestBridge(Node):
         self.last_feedback_time = 0.0
         self.odometry = None
         self.joystick_axes = []
+        self.joystick_buttons = []
         self.last_joystick_time = 0.0
 
     def _rpm_callback(self, message):
@@ -315,6 +319,7 @@ class MotorTestBridge(Node):
 
     def _joystick_callback(self, message):
         self.joystick_axes = list(message.axes)
+        self.joystick_buttons = list(message.buttons)
         self.last_joystick_time = time.monotonic()
 
     def motor_direction(self, motor_id):
@@ -378,6 +383,7 @@ class MotorTestWindow(QMainWindow):
         self.angular_speed = 0.0
         self.target_angular_speed = 0.0
         self.joystick_neutral_required = True
+        self.previous_joystick_buttons = []
         self.state_change_in_progress = False
         self.last_online_ids = []
 
@@ -638,6 +644,7 @@ class MotorTestWindow(QMainWindow):
         rclpy.spin_once(self.bridge, timeout_sec=0.0)
 
     def _control_tick(self):
+        self._apply_joystick_state()
         if not self._normal_control_enabled():
             return
         if self.input_combo.currentIndex() == 1:
@@ -668,12 +675,15 @@ class MotorTestWindow(QMainWindow):
         fresh = (
             time.monotonic() - self.bridge.last_joystick_time <
             self.bridge.joystick_timeout)
-        throttle = axes[1] if fresh and len(axes) > 1 else 0.0
-        steering = axes[3] if fresh and len(axes) > 3 else 0.0
+        throttle = axes[4] if fresh and len(axes) > 4 else 0.0
+        steering = -axes[3] if fresh and len(axes) > 3 else 0.0
         if abs(throttle) < self.bridge.joystick_deadzone:
             throttle = 0.0
         if abs(steering) < self.bridge.joystick_deadzone:
             steering = 0.0
+        if throttle == 0.0 and steering == 0.0:
+            throttle = axes[7] if fresh and len(axes) > 7 else 0.0
+            steering = -axes[6] if fresh and len(axes) > 6 else 0.0
         if self.joystick_neutral_required:
             if throttle == 0.0 and steering == 0.0:
                 self.joystick_neutral_required = False
@@ -688,6 +698,31 @@ class MotorTestWindow(QMainWindow):
         else:
             self.target_linear_speed = throttle * self.bridge.max_linear_speed
             self.target_angular_speed = steering * self.bridge.max_angular_speed
+
+    def _apply_joystick_state(self):
+        fresh = (
+            time.monotonic() - self.bridge.last_joystick_time <
+            self.bridge.joystick_timeout)
+        buttons = self.bridge.joystick_buttons if fresh else []
+
+        def pressed(index):
+            return (
+                len(buttons) > index and buttons[index] == 1 and
+                (len(self.previous_joystick_buttons) <= index or
+                 self.previous_joystick_buttons[index] == 0)
+            )
+
+        if not self.state_change_in_progress:
+            if pressed(0):  # X: Free
+                self._set_state_button(1)
+                self._state_selected(1)
+            elif pressed(1):  # B: Brake
+                self._set_state_button(2)
+                self._state_selected(2)
+            elif pressed(2):  # A: Drive
+                self._set_state_button(0)
+                self._state_selected(0)
+        self.previous_joystick_buttons = list(buttons)
 
     @staticmethod
     def _approach(value, target, step):

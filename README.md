@@ -15,6 +15,8 @@ source install/setup.bash
 
 Edit [config/robot.yaml](config/robot.yaml) for the serial device, motor IDs, motor directions, wheel dimensions, and GUI limits. The GUI can also edit this file with **Edit shared YAML**. It creates a `.bak` backup and requires a restart to apply changes.
 
+The differential-drive node uses the standard wheel equations, limits commands proportionally to `330 RPM`, and treats stale RPM feedback as zero after `feedback_timeout`.
+
 Motor IDs are scanned from 1 through `max_check`. The default `max_check: 2` supports either one connected motor or motors with IDs 1 and 2.
 
 ## Test GUI

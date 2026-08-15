@@ -10,6 +10,7 @@ two_wheels_robot_node:
     R_wheel: 0.051
     pub_tf: false
     joystick_timeout: 2.0
+    feedback_timeout: 0.2
     enable_joystick: true
     left_motor_id: 1
     right_motor_id: 2
