@@ -1,6 +1,7 @@
 #include "ddsm115_controller/motor_control.hpp"
 
 #include <fcntl.h>
+#include <poll.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -9,6 +10,7 @@
 #include <sys/ioctl.h>
 #endif
 
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cstring>
@@ -95,28 +97,67 @@ double MotorControl::map_value(
 void MotorControl::write_packet(const std::uint8_t * data, std::size_t size)
 {
   std::size_t written = 0;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
   while (written < size) {
     const ssize_t result = ::write(serial_fd_, data + written, size - written);
     if (result > 0) {
       written += static_cast<std::size_t>(result);
-    } else if (result < 0 && errno != EAGAIN && errno != EINTR) {
+      continue;
+    }
+    if (result < 0 && errno != EAGAIN && errno != EINTR) {
       throw std::system_error(errno, std::generic_category(), "Serial write failed");
     }
+
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+      deadline - std::chrono::steady_clock::now());
+    if (remaining <= std::chrono::milliseconds::zero()) {
+      throw std::runtime_error("Serial write timed out");
+    }
+    pollfd descriptor{serial_fd_, POLLOUT, 0};
+    const int poll_result = ::poll(
+      &descriptor, 1,
+      static_cast<int>(std::max<std::int64_t>(1, remaining.count())));
+    if (poll_result == 0) {
+      throw std::runtime_error("Serial write timed out");
+    }
+    if (poll_result < 0 && errno != EINTR) {
+      throw std::system_error(errno, std::generic_category(), "Serial write poll failed");
+    }
+    if ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+      throw std::runtime_error("Serial port became unavailable while writing");
+    }
   }
-  tcdrain(serial_fd_);
+  if (tcdrain(serial_fd_) != 0) {
+    throw std::system_error(errno, std::generic_category(), "Serial drain failed");
+  }
 }
 
 void MotorControl::set_id(std::uint8_t id)
 {
-  const std::array<std::uint8_t, 10> packet{0xAA, 0x55, 0x53, id, 0, 0, 0, 0, 0, 0xDE};
+  std::array<std::uint8_t, 10> packet{0xAA, 0x55, 0x53, id, 0, 0, 0, 0, 0, 0};
+  packet.back() = crc8_maxim(packet.data(), packet.size() - 1);
   for (int attempt = 0; attempt < 5; ++attempt) {
     write_packet(packet.data(), packet.size());
   }
 }
 
+void MotorControl::send_current(std::uint8_t id, float current)
+{
+  const float limited_current = std::clamp(current, -8.0F, 8.0F);
+  const auto raw = static_cast<std::int16_t>(
+    map_value(limited_current, -8.0, 8.0, -32767.0, 32767.0));
+  const auto bytes = int16_to_bytes(raw);
+  std::array<std::uint8_t, 10> packet{id, 0x64, bytes[0], bytes[1], 0, 0, 0, 0, 0, 0};
+  packet.back() = crc8_maxim(packet.data(), packet.size() - 1);
+  write_packet(packet.data(), packet.size());
+  (void)read_reply(id);
+}
+
 void MotorControl::send_rpm(std::uint8_t id, std::int16_t rpm)
 {
-  const auto bytes = int16_to_bytes(rpm);
+  constexpr std::int16_t minimum_rpm = -330;
+  constexpr std::int16_t maximum_rpm = 330;
+  const auto bytes = int16_to_bytes(std::clamp(rpm, minimum_rpm, maximum_rpm));
   std::array<std::uint8_t, 10> packet{id, 0x64, bytes[0], bytes[1], 0, 0, 0, 0, 0, 0};
   packet.back() = crc8_maxim(packet.data(), packet.size() - 1);
   write_packet(packet.data(), packet.size());
@@ -172,6 +213,25 @@ MotorFeedback MotorControl::read_reply(std::uint8_t id, std::chrono::millisecond
   const auto deadline = std::chrono::steady_clock::now() + timeout;
 
   while (std::chrono::steady_clock::now() < deadline) {
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+      deadline - std::chrono::steady_clock::now());
+    pollfd descriptor{serial_fd_, POLLIN, 0};
+    const int poll_result = ::poll(
+      &descriptor, 1,
+      static_cast<int>(std::max<std::int64_t>(1, remaining.count())));
+    if (poll_result == 0) {
+      break;
+    }
+    if (poll_result < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      throw std::system_error(errno, std::generic_category(), "Serial read poll failed");
+    }
+    if ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+      break;
+    }
+
     std::uint8_t byte = 0;
     const ssize_t count = ::read(serial_fd_, &byte, 1);
     if (count == 0 || (count < 0 && (errno == EAGAIN || errno == EINTR))) {
@@ -188,7 +248,7 @@ MotorFeedback MotorControl::read_reply(std::uint8_t id, std::chrono::millisecond
       continue;
     }
     if (used == 1) {
-      if (byte == 0x02) {
+      if (byte == 0x01 || byte == 0x02) {
         buffer[used++] = byte;
       } else {
         used = byte == id ? 1U : 0U;

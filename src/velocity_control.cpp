@@ -12,6 +12,7 @@
 #include "std_msgs/msg/float32_multi_array.hpp"
 #include "std_msgs/msg/int16_multi_array.hpp"
 #include "std_msgs/msg/int8_multi_array.hpp"
+#include "std_srvs/srv/set_bool.hpp"
 
 using namespace std::chrono_literals;
 
@@ -26,8 +27,17 @@ public:
     driver_(declare_parameter("usb_dev", std::string("/dev/ttyUSB0")))
   {
     const int max_check = declare_parameter("max_check", 10);
+    const double command_timeout = declare_parameter("command_timeout", 2.0);
+    if (max_check < 1 || max_check > 255) {
+      throw std::invalid_argument("max_check must be between 1 and 255");
+    }
+    if (command_timeout <= 0.0) {
+      throw std::invalid_argument("command_timeout must be greater than zero");
+    }
+    command_timeout_ = std::chrono::duration<double>(command_timeout);
     RCLCPP_INFO(get_logger(), "Start velocity_control_node");
     RCLCPP_INFO(get_logger(), "max_check: %d", max_check);
+    RCLCPP_INFO(get_logger(), "command_timeout: %.3f s", command_timeout);
 
     for (int id = 1; id <= max_check; ++id) {
       const auto feedback = driver_.get_motor_feedback(static_cast<std::uint8_t>(id));
@@ -54,6 +64,7 @@ public:
     rpm_command_subscription_ = create_subscription<std_msgs::msg::Int16MultiArray>(
       "/ddsm115/rpm_cmd", qos,
       [this](const std_msgs::msg::Int16MultiArray & message) {
+        std::fill(rpm_commands_.begin(), rpm_commands_.end(), std::int16_t{0});
         const std::size_t count = std::min(message.data.size(), rpm_commands_.size());
         for (std::size_t index = 0; index < count; ++index) {
           rpm_commands_[index] = message.data[index];
@@ -63,6 +74,11 @@ public:
     brake_subscription_ = create_subscription<std_msgs::msg::Bool>(
       "/ddsm115/brake", qos,
       [this](const std_msgs::msg::Bool & message) {brake_enabled_ = message.data;});
+    freewheel_service_ = create_service<std_srvs::srv::SetBool>(
+      "/ddsm115/set_freewheel",
+      std::bind(
+        &VelocityControl::set_freewheel, this, std::placeholders::_1,
+        std::placeholders::_2));
     rpm_publisher_ = create_publisher<std_msgs::msg::Int16MultiArray>("/ddsm115/rpm_fb", qos);
     current_publisher_ = create_publisher<std_msgs::msg::Float32MultiArray>("/ddsm115/cur_fb", qos);
     temperature_publisher_ =
@@ -90,10 +106,45 @@ private:
     }
   }
 
+  void set_freewheel(
+    const std_srvs::srv::SetBool::Request::SharedPtr request,
+    std_srvs::srv::SetBool::Response::SharedPtr response)
+  {
+    try {
+      if (request->data) {
+        for (const int id : online_ids_) {
+          RCLCPP_INFO(get_logger(), "%s", driver_.set_drive_mode(id, 1).c_str());
+          driver_.send_current(id, 0.0F);
+        }
+        freewheel_enabled_ = true;
+        response->message = "Freewheel enabled";
+      } else {
+        for (const int id : online_ids_) {
+          driver_.send_current(id, 0.0F);
+          RCLCPP_INFO(get_logger(), "%s", driver_.set_drive_mode(id, 2).c_str());
+          driver_.send_rpm(id, 0);
+        }
+        std::fill(rpm_commands_.begin(), rpm_commands_.end(), std::int16_t{0});
+        brake_enabled_ = false;
+        freewheel_enabled_ = false;
+        last_command_time_ = std::chrono::steady_clock::now();
+        response->message = "Freewheel disabled; velocity mode restored at 0 RPM";
+      }
+      response->success = true;
+      RCLCPP_INFO(get_logger(), "%s", response->message.c_str());
+    } catch (const std::exception & error) {
+      response->success = false;
+      response->message = error.what();
+      RCLCPP_ERROR(get_logger(), "Failed to change freewheel mode: %s", error.what());
+    }
+  }
+
   void update()
   {
     try {
-      if (std::chrono::steady_clock::now() - last_command_time_ > 2s) {
+      if (freewheel_enabled_) {
+        // Keep the zero-current command active without sending velocity or brake commands.
+      } else if (std::chrono::steady_clock::now() - last_command_time_ > command_timeout_) {
         for (const int id : online_ids_) {
           if (brake_enabled_) {
             driver_.set_brake(id);
@@ -150,10 +201,13 @@ private:
   std::vector<float> current_feedback_;
   std::vector<std::int8_t> errors_;
   bool brake_enabled_{false};
+  bool freewheel_enabled_{false};
+  std::chrono::duration<double> command_timeout_{2.0};
   std::chrono::steady_clock::time_point last_command_time_{std::chrono::steady_clock::now()};
   std::chrono::steady_clock::time_point last_slow_publish_time_{std::chrono::steady_clock::now()};
   rclcpp::Subscription<std_msgs::msg::Int16MultiArray>::SharedPtr rpm_command_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr brake_subscription_;
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr freewheel_service_;
   rclcpp::Publisher<std_msgs::msg::Int16MultiArray>::SharedPtr rpm_publisher_;
   rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr current_publisher_;
   rclcpp::Publisher<std_msgs::msg::Int8MultiArray>::SharedPtr temperature_publisher_;

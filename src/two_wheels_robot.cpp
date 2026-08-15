@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 
 #include "geometry_msgs/msg/transform_stamped.hpp"
@@ -24,15 +25,26 @@ class TwoWheelsRobot : public rclcpp::Node
 public:
   TwoWheelsRobot()
   : Node("two_wheels_robot_node"),
-    wheel_base_(declare_parameter("wheel_base", 0.255)),
+    wheel_base_(declare_parameter("wheel_base", 0.207)),
     wheel_radius_(declare_parameter("R_wheel", 0.051)),
     publish_tf_(declare_parameter("pub_tf", false)),
+    joystick_timeout_(declare_parameter("joystick_timeout", 2.0)),
     transform_broadcaster_(*this)
   {
+    if (wheel_base_ <= 0.0) {
+      throw std::invalid_argument("wheel_base must be greater than zero");
+    }
+    if (wheel_radius_ <= 0.0) {
+      throw std::invalid_argument("R_wheel must be greater than zero");
+    }
+    if (joystick_timeout_ <= 0.0) {
+      throw std::invalid_argument("joystick_timeout must be greater than zero");
+    }
     RCLCPP_INFO(get_logger(), "Start two_wheels_robot_node");
     RCLCPP_INFO(get_logger(), "wheel_base: %.3f", wheel_base_);
     RCLCPP_INFO(get_logger(), "R_wheel: %.3f", wheel_radius_);
     RCLCPP_INFO(get_logger(), "pub_tf: %s", publish_tf_ ? "true" : "false");
+    RCLCPP_INFO(get_logger(), "joystick_timeout: %.3f s", joystick_timeout_);
 
     auto motor_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort();
     rpm_publisher_ =
@@ -124,6 +136,7 @@ private:
 
   void joystick_command(const sensor_msgs::msg::Joy & message)
   {
+    last_joystick_time_ = std::chrono::steady_clock::now();
     if (message.axes.size() > 3) {
       throttle_ = message.axes[1] * 100.0;
       steering_ = -message.axes[3] * 100.0;
@@ -137,10 +150,18 @@ private:
 
   void update()
   {
+    const auto update_time = std::chrono::steady_clock::now();
+    const double period_seconds =
+      std::chrono::duration<double>(update_time - last_update_time_).count();
+    last_update_time_ = update_time;
+
     if (cart_mode_ == 1) {
       std::int16_t left = 0;
       std::int16_t right = 0;
-      if (std::abs(throttle_) > 5.0 || std::abs(steering_) > 5.0) {
+      const bool joystick_online =
+        std::chrono::duration<double>(update_time - last_joystick_time_).count() <=
+        joystick_timeout_;
+      if (joystick_online && (std::abs(throttle_) > 5.0 || std::abs(steering_) > 5.0)) {
         const auto mixed = mix_axes(steering_, throttle_);
         left = static_cast<std::int16_t>(map_with_limit(mixed.first, -200.0, 200.0, -150.0, 150.0));
         right =
@@ -160,17 +181,17 @@ private:
         (right_velocity > 0.0 && left_velocity < 0.0))
       {
         linear = 0.0;
-        yaw_ += angular * period_seconds_;
+        yaw_ += angular * period_seconds;
       } else {
         const double radius = (wheel_base_ / 2.0) *
           ((left_velocity + right_velocity) / (right_velocity - left_velocity));
-        x_ = x_ - radius * std::sin(yaw_) + radius * std::sin(yaw_ + angular * period_seconds_);
-        y_ = y_ + radius * std::cos(yaw_) - radius * std::cos(yaw_ + angular * period_seconds_);
-        yaw_ += angular * period_seconds_;
+        x_ = x_ - radius * std::sin(yaw_) + radius * std::sin(yaw_ + angular * period_seconds);
+        y_ = y_ + radius * std::cos(yaw_) - radius * std::cos(yaw_ + angular * period_seconds);
+        yaw_ += angular * period_seconds;
       }
     } else {
-      x_ += linear * std::cos(yaw_) * period_seconds_;
-      y_ += linear * std::sin(yaw_) * period_seconds_;
+      x_ += linear * std::cos(yaw_) * period_seconds;
+      y_ += linear * std::sin(yaw_) * period_seconds;
     }
 
     tf2::Quaternion orientation;
@@ -208,10 +229,10 @@ private:
     }
   }
 
-  static constexpr double period_seconds_ = 0.01;
   double wheel_base_;
   double wheel_radius_;
   bool publish_tf_;
+  double joystick_timeout_;
   double left_rpm_{0.0};
   double right_rpm_{0.0};
   double x_{0.0};
@@ -221,6 +242,8 @@ private:
   double steering_{0.0};
   double previous_y_{0.0};
   int cart_mode_{2};
+  std::chrono::steady_clock::time_point last_joystick_time_{};
+  std::chrono::steady_clock::time_point last_update_time_{std::chrono::steady_clock::now()};
   tf2_ros::TransformBroadcaster transform_broadcaster_;
   rclcpp::Publisher<std_msgs::msg::Int16MultiArray>::SharedPtr rpm_publisher_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odometry_publisher_;

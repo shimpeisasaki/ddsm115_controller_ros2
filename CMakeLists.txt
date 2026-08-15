@@ -11,6 +11,7 @@ find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 
@@ -30,7 +31,7 @@ ament_target_dependencies(set_motor_id rclcpp)
 
 add_executable(velocity_control src/velocity_control.cpp)
 target_link_libraries(velocity_control motor_control)
-ament_target_dependencies(velocity_control rclcpp std_msgs)
+ament_target_dependencies(velocity_control rclcpp std_msgs std_srvs)
 
 add_executable(two_wheels_robot src/two_wheels_robot.cpp)
 ament_target_dependencies(two_wheels_robot geometry_msgs nav_msgs rclcpp sensor_msgs std_msgs tf2 tf2_ros)
@@ -47,6 +48,7 @@ install(TARGETS
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY rviz_config DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_cpplint REQUIRED)
