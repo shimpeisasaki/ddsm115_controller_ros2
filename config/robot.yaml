@@ -40,7 +40,7 @@ motor_test_gui:
     right_motor_id: 2
     left_direction: 1
     right_direction: -1
-    rpm_step: 1
+    rpm_step: 10
     max_test_rpm: 150
     linear_step: 0.02
     angular_step: 0.1
