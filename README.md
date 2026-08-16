@@ -27,11 +27,11 @@ Start the GUI and controller with one or two motors:
 ros2 launch ddsm115_controller motor_test_gui.launch.py
 ```
 
-Override the serial device or scan range when needed:
+Use a different shared configuration file when needed:
 
 ```sh
 ros2 launch ddsm115_controller motor_test_gui.launch.py \
-  usb_dev:=/dev/ttyUSB1 max_check:=2
+  config:=/path/to/robot.yaml
 ```
 
 The GUI provides:
@@ -54,7 +54,21 @@ Start the controller and differential-drive node without the GUI:
 ros2 launch ddsm115_controller robot.launch.py
 ```
 
-This launch uses the same `config/robot.yaml` and scans motor IDs 1 and 2 by default. It also accepts `usb_dev:=`, `max_check:=`, `command_timeout:=`, and `config:=` overrides.
+This launch uses the same `config/robot.yaml` and scans motor IDs 1 and 2 by default. Pass `config:=/path/to/robot.yaml` to use another complete configuration. Communication settings are read only from that YAML so GUI edits and production behavior cannot diverge.
+
+## Nav2 Integration
+
+`robot.launch.py` provides the mobile-base interfaces expected by Nav2:
+
+- subscribes to `/cmd_vel`
+- publishes `/odom`
+- publishes `odom -> base_link` TF by default
+- disables the built-in joystick command source by default
+- stops motor commands after 0.5 seconds without a new command
+
+Localization or SLAM must provide `map -> odom`; this package must remain the only publisher of `odom -> base_link`. Keep the Nav2 base frame consistent with `base_frame` in `config/robot.yaml`. Tune the pose and twist covariance values from measurements before using `robot_localization` or relying on localization quality.
+
+`/ddsm115/online_id` contains motors that recently returned valid protocol responses. After three consecutive failures an ID is removed, and missing IDs are rescanned once per second.
 
 ## Motor ID Tools
 
@@ -79,11 +93,16 @@ The controller subscribes to:
 
 It publishes:
 
-- `/ddsm115/rpm_fb` (`std_msgs/msg/Int16MultiArray`)
-- `/ddsm115/cur_fb` (`std_msgs/msg/Float32MultiArray`)
-- `/ddsm115/temp_fb` (`std_msgs/msg/Int8MultiArray`)
-- `/ddsm115/error` (`std_msgs/msg/Int8MultiArray`)
-- `/ddsm115/online_id` (`std_msgs/msg/Int8MultiArray`)
+- `/ddsm115/rpm_fb` (`std_msgs/msg/Int16MultiArray`, every `motor_update_period`)
+- `/ddsm115/cur_fb` (`std_msgs/msg/Float32MultiArray`, every `current_publish_period`)
+- `/ddsm115/temp_fb` (`std_msgs/msg/Int8MultiArray`, every `temperature_publish_period`)
+- `/ddsm115/error` (`std_msgs/msg/Int8MultiArray`, every `status_publish_period`)
+- `/ddsm115/online_id` (`std_msgs/msg/UInt8MultiArray`, every `status_publish_period`)
+
+RPM command replies already contain RPM, current, temperature, and error in one fixed-length
+frame. The publish-period parameters reduce ROS topic traffic; they do not change that frame.
+No additional detail query is sent during normal control. `update_period` controls the `/odom`
+and `odom -> base_link` TF rate.
 
 It provides `/ddsm115/set_freewheel` (`std_srvs/srv/SetBool`). Set `data: true` for freewheel and `data: false` to restore velocity mode at zero RPM.
 

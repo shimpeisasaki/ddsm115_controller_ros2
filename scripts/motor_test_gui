@@ -40,7 +40,13 @@ from PyQt5.QtWidgets import (
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Joy
-from std_msgs.msg import Bool, Float32MultiArray, Int16MultiArray, Int8MultiArray
+from std_msgs.msg import (
+    Bool,
+    Float32MultiArray,
+    Int16MultiArray,
+    Int8MultiArray,
+    UInt8MultiArray,
+)
 from std_srvs.srv import SetBool
 
 
@@ -124,9 +130,19 @@ class ConfigDialog(QDialog):
         self.usb_dev = QLineEdit(str(velocity['usb_dev']))
         self.max_check = self._integer(velocity['max_check'], 1, 255)
         self.command_timeout = self._decimal(velocity['command_timeout'], 0.1, 30.0, 2)
+        self.motor_update_period = self._decimal(
+            velocity['motor_update_period'], 0.005, 1.0, 3)
         self.wheel_base = self._decimal(robot['wheel_base'], 0.01, 10.0, 4)
         self.wheel_radius = self._decimal(robot['R_wheel'], 0.001, 2.0, 4)
         self.feedback_timeout = self._decimal(robot['feedback_timeout'], 0.02, 5.0, 2)
+        self.odom_frame = QLineEdit(str(robot['odom_frame']))
+        self.base_frame = QLineEdit(str(robot['base_frame']))
+        self.pose_xy_covariance = self._decimal(robot['pose_xy_covariance'], 0.0, 100.0, 4)
+        self.pose_yaw_covariance = self._decimal(robot['pose_yaw_covariance'], 0.0, 100.0, 4)
+        self.twist_linear_covariance = self._decimal(
+            robot['twist_linear_covariance'], 0.0, 100.0, 4)
+        self.twist_angular_covariance = self._decimal(
+            robot['twist_angular_covariance'], 0.0, 100.0, 4)
         self.left_motor_id = self._integer(robot['left_motor_id'], 1, 255)
         self.right_motor_id = self._integer(robot['right_motor_id'], 1, 255)
         self.left_direction = self._direction(robot['left_direction'])
@@ -142,9 +158,16 @@ class ConfigDialog(QDialog):
             ('Serial device', self.usb_dev),
             ('Maximum scanned ID', self.max_check),
             ('Command timeout [s]', self.command_timeout),
+            ('Motor update period [s]', self.motor_update_period),
             ('Wheel base [m]', self.wheel_base),
             ('Wheel radius [m]', self.wheel_radius),
             ('Feedback timeout [s]', self.feedback_timeout),
+            ('Odometry frame', self.odom_frame),
+            ('Base frame', self.base_frame),
+            ('Pose XY covariance', self.pose_xy_covariance),
+            ('Pose yaw covariance', self.pose_yaw_covariance),
+            ('Twist linear covariance', self.twist_linear_covariance),
+            ('Twist angular covariance', self.twist_angular_covariance),
             ('Left motor ID', self.left_motor_id),
             ('Right motor ID', self.right_motor_id),
             ('Left positive direction', self.left_direction),
@@ -189,6 +212,11 @@ class ConfigDialog(QDialog):
         if self.left_motor_id.value() == self.right_motor_id.value():
             QMessageBox.warning(self, 'Invalid configuration', 'Left and right IDs must differ.')
             return
+        if not self.odom_frame.text().strip() or not self.base_frame.text().strip() or \
+                self.odom_frame.text().strip() == self.base_frame.text().strip():
+            QMessageBox.warning(
+                self, 'Invalid configuration', 'Odometry and base frames must be distinct.')
+            return
         velocity = self.config['velocity_control_node']['ros__parameters']
         robot = self.config['two_wheels_robot_node']['ros__parameters']
         gui = self.config['motor_test_gui']['ros__parameters']
@@ -196,11 +224,18 @@ class ConfigDialog(QDialog):
             'usb_dev': self.usb_dev.text().strip(),
             'max_check': self.max_check.value(),
             'command_timeout': self.command_timeout.value(),
+            'motor_update_period': self.motor_update_period.value(),
         })
         robot.update({
             'wheel_base': self.wheel_base.value(),
             'R_wheel': self.wheel_radius.value(),
             'feedback_timeout': self.feedback_timeout.value(),
+            'odom_frame': self.odom_frame.text().strip(),
+            'base_frame': self.base_frame.text().strip(),
+            'pose_xy_covariance': self.pose_xy_covariance.value(),
+            'pose_yaw_covariance': self.pose_yaw_covariance.value(),
+            'twist_linear_covariance': self.twist_linear_covariance.value(),
+            'twist_angular_covariance': self.twist_angular_covariance.value(),
             'left_motor_id': self.left_motor_id.value(),
             'right_motor_id': self.right_motor_id.value(),
             'left_direction': self.left_direction.currentData(),
@@ -283,7 +318,7 @@ class MotorTestBridge(Node):
         self.create_subscription(
             Int8MultiArray, '/ddsm115/error', self._error_callback, qos)
         self.create_subscription(
-            Int8MultiArray, '/ddsm115/online_id', self._online_callback, qos)
+            UInt8MultiArray, '/ddsm115/online_id', self._online_callback, qos)
         self.create_subscription(Odometry, '/odom', self._odometry_callback, 10)
         self.create_subscription(Joy, '/joy', self._joystick_callback, 10)
 
@@ -517,6 +552,7 @@ class MotorTestWindow(QMainWindow):
         selectors.addWidget(QLabel('Mode'))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(['Single motor', 'Differential drive'])
+        self.mode_combo.model().item(1).setEnabled(False)
         self.mode_combo.currentIndexChanged.connect(self._mode_changed)
         selectors.addWidget(self.mode_combo)
         selectors.addWidget(QLabel('Input'))
@@ -847,6 +883,14 @@ class MotorTestWindow(QMainWindow):
             selected_index = self.motor_combo.findData(selected_id)
             if selected_index >= 0:
                 self.motor_combo.setCurrentIndex(selected_index)
+            both_wheels_online = (
+                self.bridge.left_motor_id in self.bridge.online_ids and
+                self.bridge.right_motor_id in self.bridge.online_ids)
+            self.mode_combo.model().item(1).setEnabled(both_wheels_online)
+            if not both_wheels_online and self.mode_combo.currentIndex() == 1:
+                self.mode_combo.setCurrentIndex(0)
+                self.message_label.setText(
+                    'Differential mode disabled until both wheel motors are online.')
 
         for motor_id in range(1, self.bridge.max_check + 1):
             index = motor_id - 1

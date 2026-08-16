@@ -141,7 +141,7 @@ void MotorControl::set_id(std::uint8_t id)
   }
 }
 
-void MotorControl::send_current(std::uint8_t id, float current)
+MotorFeedback MotorControl::send_current(std::uint8_t id, float current)
 {
   const float limited_current = std::clamp(current, -8.0F, 8.0F);
   const auto raw = static_cast<std::int16_t>(
@@ -150,10 +150,10 @@ void MotorControl::send_current(std::uint8_t id, float current)
   std::array<std::uint8_t, 10> packet{id, 0x64, bytes[0], bytes[1], 0, 0, 0, 0, 0, 0};
   packet.back() = crc8_maxim(packet.data(), packet.size() - 1);
   write_packet(packet.data(), packet.size());
-  (void)read_reply(id);
+  return read_reply(id);
 }
 
-void MotorControl::send_rpm(std::uint8_t id, std::int16_t rpm)
+MotorFeedback MotorControl::send_rpm(std::uint8_t id, std::int16_t rpm)
 {
   constexpr std::int16_t minimum_rpm = -330;
   constexpr std::int16_t maximum_rpm = 330;
@@ -161,25 +161,15 @@ void MotorControl::send_rpm(std::uint8_t id, std::int16_t rpm)
   std::array<std::uint8_t, 10> packet{id, 0x64, bytes[0], bytes[1], 0, 0, 0, 0, 0, 0};
   packet.back() = crc8_maxim(packet.data(), packet.size() - 1);
   write_packet(packet.data(), packet.size());
-  (void)read_reply(id);
+  return read_reply(id);
 }
 
-void MotorControl::send_degree(std::uint8_t id, double degrees)
-{
-  const auto raw = static_cast<std::int16_t>(map_value(degrees, 0.0, 360.0, 0.0, 32767.0));
-  const auto bytes = int16_to_bytes(raw);
-  std::array<std::uint8_t, 10> packet{id, 0x64, bytes[0], bytes[1], 0, 0, 0, 0, 0, 0};
-  packet.back() = crc8_maxim(packet.data(), packet.size() - 1);
-  write_packet(packet.data(), packet.size());
-  (void)read_reply(id);
-}
-
-void MotorControl::set_brake(std::uint8_t id)
+MotorFeedback MotorControl::set_brake(std::uint8_t id)
 {
   std::array<std::uint8_t, 10> packet{id, 0x64, 0, 0, 0, 0, 0, 0xFF, 0, 0};
   packet.back() = crc8_maxim(packet.data(), packet.size() - 1);
   write_packet(packet.data(), packet.size());
-  (void)read_reply(id);
+  return read_reply(id);
 }
 
 std::string MotorControl::set_drive_mode(std::uint8_t id, std::uint8_t mode)

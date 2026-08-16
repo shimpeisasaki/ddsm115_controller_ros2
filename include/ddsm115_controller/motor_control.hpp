@@ -30,10 +30,9 @@ public:
   MotorControl & operator=(const MotorControl &) = delete;
 
   void set_id(std::uint8_t id);
-  void send_current(std::uint8_t id, float current);
-  void send_rpm(std::uint8_t id, std::int16_t rpm);
-  void send_degree(std::uint8_t id, double degrees);
-  void set_brake(std::uint8_t id);
+  MotorFeedback send_current(std::uint8_t id, float current);
+  MotorFeedback send_rpm(std::uint8_t id, std::int16_t rpm);
+  MotorFeedback set_brake(std::uint8_t id);
   std::string set_drive_mode(std::uint8_t id, std::uint8_t mode);
   MotorFeedback get_motor_feedback(std::uint8_t id);
 

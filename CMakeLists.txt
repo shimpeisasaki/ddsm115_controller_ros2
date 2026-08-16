@@ -37,6 +37,7 @@ add_executable(two_wheels_robot src/two_wheels_robot.cpp)
 ament_target_dependencies(
   two_wheels_robot geometry_msgs nav_msgs rclcpp sensor_msgs std_msgs std_srvs tf2 tf2_ros)
 target_compile_features(two_wheels_robot PUBLIC cxx_std_17)
+target_include_directories(two_wheels_robot PRIVATE include)
 
 install(DIRECTORY include/ DESTINATION include)
 install(TARGETS
@@ -56,6 +57,7 @@ install(PROGRAMS scripts/motor_test_gui DESTINATION lib/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(ament_cmake_cpplint REQUIRED)
   find_package(ament_cmake_flake8 REQUIRED)
+  find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_lint_cmake REQUIRED)
   find_package(ament_cmake_uncrustify REQUIRED)
 
@@ -63,6 +65,9 @@ if(BUILD_TESTING)
   ament_flake8(launch scripts/motor_test_gui)
   ament_lint_cmake()
   ament_uncrustify()
+
+  ament_add_gtest(test_differential_drive test/test_differential_drive.cpp)
+  target_include_directories(test_differential_drive PRIVATE include)
 endif()
 
 ament_package()
