@@ -26,12 +26,14 @@ public:
     update_period_(declare_parameter("update_period", 0.02)),
     joystick_timeout_(declare_parameter("joystick_timeout", 0.5)),
     joystick_deadzone_(declare_parameter("joystick_deadzone", 0.03)),
+    curvature_deadzone_(declare_parameter("curvature_deadzone", 0.05)),
     normal_max_linear_speed_(declare_parameter("normal_max_linear_speed", 1.0)),
     high_max_linear_speed_(declare_parameter("high_max_linear_speed", 1.666667)),
     maximum_curvature_(declare_parameter("maximum_curvature", 0.8))
   {
     if (update_period_ <= 0.0 || joystick_timeout_ <= 0.0 ||
       joystick_deadzone_ < 0.0 || joystick_deadzone_ >= 1.0 ||
+      curvature_deadzone_ < 0.0 || curvature_deadzone_ >= 1.0 ||
       normal_max_linear_speed_ <= 0.0 || high_max_linear_speed_ <= 0.0 ||
       maximum_curvature_ <= 0.0)
     {
@@ -109,7 +111,7 @@ private:
     const double right_horizontal = message.axes.size() > 3 ? message.axes[3] : 0.0;
     const double right_vertical = message.axes.size() > 4 ? message.axes[4] : 0.0;
     linear_input_ = apply_deadzone(right_vertical, joystick_deadzone_);
-    curvature_input_ = apply_deadzone(-right_horizontal, joystick_deadzone_);
+    curvature_input_ = apply_deadzone(-right_horizontal, curvature_deadzone_);
 
     const auto pressed = [&message, this](std::size_t index) {
         return message.buttons.size() > index && message.buttons[index] == 1 &&
@@ -150,6 +152,7 @@ private:
   double update_period_;
   double joystick_timeout_;
   double joystick_deadzone_;
+  double curvature_deadzone_;
   double normal_max_linear_speed_;
   double high_max_linear_speed_;
   double maximum_curvature_;
