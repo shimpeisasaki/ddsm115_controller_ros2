@@ -15,21 +15,8 @@ two_wheels_robot_node:
     R_wheel: 0.050
     pub_tf: true
     update_period: 0.02
-    joystick_timeout: 0.5
-    joystick_deadzone: 0.03
-    joystick_low_max_linear_speed: 1.111111  # 4 km/h
-    joystick_high_max_linear_speed: 1.666667 # 6 km/h
-    joystick_max_angular_speed: 1.2
-    joystick_linear_acceleration: 0.3
-    joystick_linear_deceleration: 0.6
-    joystick_angular_acceleration: 0.8
-    joystick_angular_deceleration: 1.5
-    joystick_linear_response_exponent: 1.8
-    joystick_angular_response_exponent: 1.8
-    joystick_linear_jerk: 0.8
-    joystick_angular_jerk: 2.0
     feedback_timeout: 0.2
-    enable_joystick: true
+    enable_joystick: false
     left_motor_id: 1
     right_motor_id: 2
     left_direction: 1

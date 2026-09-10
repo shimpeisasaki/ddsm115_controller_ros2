@@ -39,6 +39,10 @@ ament_target_dependencies(
 target_compile_features(two_wheels_robot PUBLIC cxx_std_17)
 target_include_directories(two_wheels_robot PRIVATE include)
 
+add_executable(curvature_teleop src/curvature_teleop.cpp)
+ament_target_dependencies(curvature_teleop geometry_msgs rclcpp sensor_msgs std_msgs std_srvs)
+target_compile_features(curvature_teleop PUBLIC cxx_std_17)
+
 install(DIRECTORY include/ DESTINATION include)
 install(TARGETS
   motor_control
@@ -46,6 +50,7 @@ install(TARGETS
   set_motor_id
   velocity_control
   two_wheels_robot
+  curvature_teleop
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME})

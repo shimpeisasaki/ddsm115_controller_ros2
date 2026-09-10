@@ -58,25 +58,10 @@ This launch uses the same `config/robot.yaml` and scans motor IDs 1 and 2 by def
 
 ## Manual Joystick Drive
 
-Enable joystick input in the integrated bringup:
-
-```sh
-ros2 launch experiment_nav2 bringup.launch.py enable_joystick:=true
-```
-
-Only the analog right stick is used: up/down commands forward/reverse linear velocity and left/right
-commands angular velocity. Combining the two produces an arc using standard differential-drive
-kinematics. The left stick/D-pad does not command the motors.
-
-- `X`: normal drive, maximum 4 km/h
-- `A`: high drive, maximum 6 km/h
-- `B`: brake
-- `Y`: freewheel
-
-The joystick has a 3% dead zone, an exponent response curve, and jerk-limited S-curve ramps for
-linear/angular velocity. The corresponding `two_wheels_robot_node` parameters are in
-`config/robot.yaml`. Start in normal mode; reduce the acceleration or jerk limits if the vehicle
-still feels too sharp.
+Use `experiment_nav2` for manual operation. Its curvature-teleop node converts the analog right
+stick into a linear velocity and a path curvature, then routes `/cmd_vel_teleop` through
+`nav2_velocity_smoother` to `/cmd_vel`. The base driver itself remains joystick-free and accepts only
+the smoothed velocity command.
 
 ## Nav2 Integration
 
