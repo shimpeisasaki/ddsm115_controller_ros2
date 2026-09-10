@@ -11,11 +11,23 @@ velocity_control_node:
 
 two_wheels_robot_node:
   ros__parameters:
-    wheel_base: 0.207
-    R_wheel: 0.051
+    wheel_base: 0.208
+    R_wheel: 0.050
     pub_tf: true
     update_period: 0.02
-    joystick_timeout: 2.0
+    joystick_timeout: 0.5
+    joystick_deadzone: 0.03
+    joystick_low_max_linear_speed: 1.111111  # 4 km/h
+    joystick_high_max_linear_speed: 1.666667 # 6 km/h
+    joystick_max_angular_speed: 1.2
+    joystick_linear_acceleration: 0.3
+    joystick_linear_deceleration: 0.6
+    joystick_angular_acceleration: 0.8
+    joystick_angular_deceleration: 1.5
+    joystick_linear_response_exponent: 1.8
+    joystick_angular_response_exponent: 1.8
+    joystick_linear_jerk: 0.8
+    joystick_angular_jerk: 2.0
     feedback_timeout: 0.2
     enable_joystick: true
     left_motor_id: 1
@@ -34,8 +46,8 @@ motor_test_gui:
     usb_dev: /dev/ttyUSB0
     max_check: 2
     command_timeout: 0.5
-    wheel_base: 0.207
-    wheel_radius: 0.051
+    wheel_base: 0.208
+    wheel_radius: 0.050
     left_motor_id: 1
     right_motor_id: 2
     left_direction: 1
@@ -47,5 +59,5 @@ motor_test_gui:
     max_linear_speed: 1.762
     max_angular_speed: 2.0
     control_period: 0.1
-    joystick_deadzone: 0.1
+    joystick_deadzone: 0.03
     gui_joystick_timeout: 2.0

@@ -331,7 +331,8 @@ private:
       RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000, "%s", error.what());
     }
     const auto elapsed = std::chrono::steady_clock::now() - update_start;
-    if (elapsed > motor_update_period_) {
+    // Allow small scheduling overruns without changing the control period.
+    if (elapsed > std::chrono::milliseconds(25)) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 1000,
         "Motor update overrun: %.3f ms (target %.3f ms)",
