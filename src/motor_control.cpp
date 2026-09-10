@@ -150,7 +150,7 @@ MotorFeedback MotorControl::send_current(std::uint8_t id, float current)
   std::array<std::uint8_t, 10> packet{id, 0x64, bytes[0], bytes[1], 0, 0, 0, 0, 0, 0};
   packet.back() = crc8_maxim(packet.data(), packet.size() - 1);
   write_packet(packet.data(), packet.size());
-  return read_reply(id);
+  return read_reply(id, reply_timeout_);
 }
 
 MotorFeedback MotorControl::send_rpm(std::uint8_t id, std::int16_t rpm)
@@ -161,7 +161,7 @@ MotorFeedback MotorControl::send_rpm(std::uint8_t id, std::int16_t rpm)
   std::array<std::uint8_t, 10> packet{id, 0x64, bytes[0], bytes[1], 0, 0, 0, 0, 0, 0};
   packet.back() = crc8_maxim(packet.data(), packet.size() - 1);
   write_packet(packet.data(), packet.size());
-  return read_reply(id);
+  return read_reply(id, reply_timeout_);
 }
 
 MotorFeedback MotorControl::set_brake(std::uint8_t id)
@@ -169,7 +169,7 @@ MotorFeedback MotorControl::set_brake(std::uint8_t id)
   std::array<std::uint8_t, 10> packet{id, 0x64, 0, 0, 0, 0, 0, 0xFF, 0, 0};
   packet.back() = crc8_maxim(packet.data(), packet.size() - 1);
   write_packet(packet.data(), packet.size());
-  return read_reply(id);
+  return read_reply(id, reply_timeout_);
 }
 
 std::string MotorControl::set_drive_mode(std::uint8_t id, std::uint8_t mode)
@@ -193,7 +193,15 @@ MotorFeedback MotorControl::get_motor_feedback(std::uint8_t id)
   std::array<std::uint8_t, 10> packet{id, 0x74, 0, 0, 0, 0, 0, 0, 0, 0};
   packet.back() = crc8_maxim(packet.data(), packet.size() - 1);
   write_packet(packet.data(), packet.size());
-  return read_reply(id);
+  return read_reply(id, reply_timeout_);
+}
+
+void MotorControl::set_reply_timeout(std::chrono::milliseconds timeout)
+{
+  if (timeout <= std::chrono::milliseconds::zero()) {
+    throw std::invalid_argument("Reply timeout must be greater than zero");
+  }
+  reply_timeout_ = timeout;
 }
 
 MotorFeedback MotorControl::read_reply(std::uint8_t id, std::chrono::milliseconds timeout)

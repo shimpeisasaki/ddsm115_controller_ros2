@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+
+"""Publish a constant cmd_vel test segment with a safe zero-command finish."""
+
+import time
+
+import rclpy
+from geometry_msgs.msg import Twist
+from rclpy.node import Node
+
+
+class CmdVelTest(Node):
+    """Publish one commanded velocity segment for odometry calibration."""
+
+    def __init__(self):
+        super().__init__('cmd_vel_test')
+        self.declare_parameter('linear_speed', 0.0)
+        self.declare_parameter('angular_speed', 0.0)
+        self.declare_parameter('start_delay', 3.0)
+        self.declare_parameter('duration', 10.0)
+        self.declare_parameter('stop_duration', 1.0)
+        self.declare_parameter('publish_period', 0.02)
+        self.declare_parameter('command_topic', '/cmd_vel')
+
+        self.linear_speed = float(self.get_parameter('linear_speed').value)
+        self.angular_speed = float(self.get_parameter('angular_speed').value)
+        self.start_delay = float(self.get_parameter('start_delay').value)
+        self.duration = float(self.get_parameter('duration').value)
+        self.stop_duration = float(self.get_parameter('stop_duration').value)
+        self.publish_period = float(self.get_parameter('publish_period').value)
+        self.command_topic = str(self.get_parameter('command_topic').value)
+        if (self.start_delay < 0.0 or self.duration < 0.0 or self.stop_duration < 0.0 or
+                self.publish_period <= 0.0):
+            raise ValueError('Timing parameters must be non-negative and publish_period positive')
+        if abs(self.linear_speed) > 0.5 or abs(self.angular_speed) > 1.0:
+            raise ValueError('Calibration commands are limited to 0.5 m/s and 1.0 rad/s')
+
+        self.publisher = self.create_publisher(Twist, self.command_topic, 10)
+        self.started_at = time.monotonic()
+        self.finished = False
+        self.timer = self.create_timer(self.publish_period, self.publish_command)
+        self.get_logger().info(
+            f'Test: delay {self.start_delay:.1f} s, command linear {self.linear_speed:.3f} m/s '
+            f'angular {self.angular_speed:.3f} rad/s for {self.duration:.1f} s')
+
+    def publish_zero(self):
+        self.publisher.publish(Twist())
+
+    def publish_command(self):
+        elapsed = time.monotonic() - self.started_at
+        if elapsed < self.start_delay or self.duration == 0.0:
+            self.publish_zero()
+            return
+        if elapsed < self.start_delay + self.duration:
+            command = Twist()
+            command.linear.x = self.linear_speed
+            command.angular.z = self.angular_speed
+            self.publisher.publish(command)
+            return
+        if elapsed < self.start_delay + self.duration + self.stop_duration:
+            self.publish_zero()
+            return
+        if not self.finished:
+            self.finished = True
+            self.timer.cancel()
+            self.publish_zero()
+            self.get_logger().info('Test complete; zero command published')
+
+
+def main():
+    rclpy.init()
+    node = CmdVelTest()
+    try:
+        # Do not call rclpy.shutdown() from a timer callback: shutdown waits
+        # for the active callback and can deadlock the single-threaded executor.
+        while rclpy.ok() and not node.finished:
+            rclpy.spin_once(node, timeout_sec=0.1)
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

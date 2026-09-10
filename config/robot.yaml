@@ -3,7 +3,9 @@ velocity_control_node:
     usb_dev: /dev/ttyUSB0
     max_check: 2
     command_timeout: 0.5
-    motor_update_period: 0.02
+    # Two RS485 request/reply transactions are performed every cycle.
+    motor_update_period: 0.05
+    serial_reply_timeout: 0.020
     online_timeout: 0.5
     current_publish_period: 1.0
     temperature_publish_period: 1.0

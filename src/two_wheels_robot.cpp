@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -138,8 +139,16 @@ public:
         const auto required_size = static_cast<std::size_t>(
           std::max(left_motor_id_, right_motor_id_));
         if (message.data.size() >= required_size) {
+          constexpr auto invalid_rpm = std::numeric_limits<std::int16_t>::min();
+          if (message.data[left_motor_id_ - 1] == invalid_rpm ||
+          message.data[right_motor_id_ - 1] == invalid_rpm)
+          {
+            feedback_valid_ = false;
+            return;
+          }
           left_rpm_ = message.data[left_motor_id_ - 1] * left_direction_;
           right_rpm_ = message.data[right_motor_id_ - 1] * right_direction_;
+          feedback_valid_ = true;
           last_feedback_time_ = std::chrono::steady_clock::now();
         }
       });
@@ -381,7 +390,7 @@ private:
       publish_rpm(wheel_rpm.first, wheel_rpm.second);
     }
 
-    const bool feedback_fresh = wheels_online_ &&
+    const bool feedback_fresh = feedback_valid_ && wheels_online_ &&
       std::chrono::duration<double>(update_time - last_feedback_time_).count() <=
       feedback_timeout_;
     const double left_velocity = feedback_fresh ? rpm_to_linear(left_rpm_) : 0.0;
@@ -464,6 +473,7 @@ private:
   double twist_linear_covariance_;
   double twist_angular_covariance_;
   bool wheels_online_{false};
+  bool feedback_valid_{false};
   double left_rpm_{0.0};
   double right_rpm_{0.0};
   double x_{0.0};

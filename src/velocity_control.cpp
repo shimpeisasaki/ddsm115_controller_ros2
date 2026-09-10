@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -31,6 +32,7 @@ public:
     const double command_timeout = declare_parameter("command_timeout", 2.0);
     const double motor_update_period = declare_parameter("motor_update_period", 0.01);
     const double online_timeout = declare_parameter("online_timeout", 0.5);
+    const double serial_reply_timeout = declare_parameter("serial_reply_timeout", 0.020);
     const double current_publish_period = declare_parameter("current_publish_period", 1.0);
     const double temperature_publish_period =
       declare_parameter("temperature_publish_period", 1.0);
@@ -44,8 +46,9 @@ public:
     if (motor_update_period <= 0.0) {
       throw std::invalid_argument("motor_update_period must be greater than zero");
     }
-    if (online_timeout <= 0.0) {
-      throw std::invalid_argument("online_timeout must be greater than zero");
+    if (online_timeout <= 0.0 || serial_reply_timeout <= 0.0) {
+      throw std::invalid_argument(
+              "online_timeout and serial_reply_timeout must be greater than zero");
     }
     if (current_publish_period <= 0.0 || temperature_publish_period <= 0.0 ||
       status_publish_period <= 0.0)
@@ -55,6 +58,9 @@ public:
     command_timeout_ = std::chrono::duration<double>(command_timeout);
     motor_update_period_ = std::chrono::duration<double>(motor_update_period);
     online_timeout_ = std::chrono::duration<double>(online_timeout);
+    driver_.set_reply_timeout(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::duration<double>(serial_reply_timeout)));
     current_publish_period_ = std::chrono::duration<double>(current_publish_period);
     temperature_publish_period_ = std::chrono::duration<double>(temperature_publish_period);
     status_publish_period_ = std::chrono::duration<double>(status_publish_period);
@@ -64,6 +70,7 @@ public:
     RCLCPP_INFO(get_logger(), "command_timeout: %.3f s", command_timeout);
     RCLCPP_INFO(get_logger(), "motor_update_period: %.3f s", motor_update_period);
     RCLCPP_INFO(get_logger(), "online_timeout: %.3f s", online_timeout);
+    RCLCPP_INFO(get_logger(), "serial_reply_timeout: %.3f s", serial_reply_timeout);
     RCLCPP_INFO(get_logger(), "current_publish_period: %.3f s", current_publish_period);
     RCLCPP_INFO(get_logger(), "temperature_publish_period: %.3f s", temperature_publish_period);
     RCLCPP_INFO(get_logger(), "status_publish_period: %.3f s", status_publish_period);
@@ -86,6 +93,7 @@ public:
 
     rpm_commands_.resize(max_check);
     rpm_feedback_.resize(max_check, 0);
+    rpm_feedback_valid_.resize(max_check, false);
     temperature_feedback_.resize(max_check, 0);
     current_feedback_.resize(max_check, 0.0F);
     errors_.resize(max_check, 0);
@@ -185,6 +193,7 @@ private:
     temperature_feedback_[id - 1] =
       static_cast<std::int8_t>(feedback.winding_temperature);
     errors_[id - 1] = static_cast<std::int8_t>(feedback.error);
+    rpm_feedback_valid_[id - 1] = true;
   }
 
   MotorFeedback exchange_with_motor(int id)
@@ -273,10 +282,12 @@ private:
             response_miss_counts_[id - 1] = 0;
             last_response_times_[id - 1] = update_start;
           } else {
+            rpm_feedback_valid_[id - 1] = false;
             response_miss_counts_[id - 1] =
               std::min(response_miss_counts_[id - 1] + 1U, 3U);
           }
         } catch (const std::exception & error) {
+          rpm_feedback_valid_[id - 1] = false;
           response_miss_counts_[id - 1] =
             std::min(response_miss_counts_[id - 1] + 1U, 3U);
           RCLCPP_ERROR_THROTTLE(
@@ -303,6 +314,11 @@ private:
 
       std_msgs::msg::Int16MultiArray rpm_message;
       rpm_message.data = rpm_feedback_;
+      for (std::size_t index = 0; index < rpm_message.data.size(); ++index) {
+        if (!rpm_feedback_valid_[index]) {
+          rpm_message.data[index] = std::numeric_limits<std::int16_t>::min();
+        }
+      }
       rpm_publisher_->publish(rpm_message);
 
       const auto publish_time = std::chrono::steady_clock::now();
@@ -346,6 +362,7 @@ private:
   std::vector<int> online_ids_;
   std::vector<std::optional<std::int16_t>> rpm_commands_;
   std::vector<std::int16_t> rpm_feedback_;
+  std::vector<bool> rpm_feedback_valid_;
   std::vector<std::int8_t> temperature_feedback_;
   std::vector<float> current_feedback_;
   std::vector<std::int8_t> errors_;

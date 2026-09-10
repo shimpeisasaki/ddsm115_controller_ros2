@@ -35,6 +35,7 @@ public:
   MotorFeedback set_brake(std::uint8_t id);
   std::string set_drive_mode(std::uint8_t id, std::uint8_t mode);
   MotorFeedback get_motor_feedback(std::uint8_t id);
+  void set_reply_timeout(std::chrono::milliseconds timeout);
 
 private:
   static std::array<std::uint8_t, 2> int16_to_bytes(std::int16_t value);
@@ -47,9 +48,10 @@ private:
   void write_packet(const std::uint8_t * data, std::size_t size);
   MotorFeedback read_reply(
     std::uint8_t id,
-    std::chrono::milliseconds timeout = std::chrono::milliseconds(10));
+    std::chrono::milliseconds timeout);
 
   int serial_fd_{-1};
+  std::chrono::milliseconds reply_timeout_{10};
 };
 
 }  // namespace ddsm115_controller
