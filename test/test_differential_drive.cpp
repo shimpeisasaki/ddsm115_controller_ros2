@@ -1,10 +1,22 @@
 #include <cmath>
 
 #include "ddsm115_controller/differential_drive.hpp"
+#include "ddsm115_controller/feedback.hpp"
 #include "gtest/gtest.h"
 
 namespace ddsm115_controller
 {
+
+TEST(Feedback, DistinguishesStoppedWheelsFromMissingReplies)
+{
+  EXPECT_TRUE(wheel_feedback_valid({0, 0}, 1, 2));
+  EXPECT_TRUE(wheel_feedback_valid({56, -57}, 1, 2));
+  EXPECT_FALSE(wheel_feedback_valid({56, invalid_rpm}, 1, 2));
+  EXPECT_FALSE(wheel_feedback_valid({invalid_rpm, -57}, 1, 2));
+  EXPECT_FALSE(wheel_feedback_valid({56}, 1, 2));
+  EXPECT_FALSE(wheel_feedback_valid({}, 1, 2));
+  EXPECT_FALSE(wheel_feedback_valid({56, -57}, 0, 2));
+}
 
 TEST(DifferentialDrive, ConvertsStraightAndTurningCommands)
 {

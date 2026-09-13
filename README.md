@@ -75,11 +75,26 @@ the smoothed velocity command.
 
 Localization or SLAM must provide `map -> odom`; this package must remain the only publisher of `odom -> base_link`. Keep the Nav2 base frame consistent with `base_frame` in `config/robot.yaml`. Tune the pose and twist covariance values from measurements before using `robot_localization` or relying on localization quality.
 
-`/ddsm115/online_id` contains motors that recently returned valid protocol responses. After three consecutive failures an ID is removed, and missing IDs are rescanned once per second.
+`/ddsm115/online_id` contains motors that recently returned valid protocol responses. Each
+wheel has its own RS485 channel, so startup verifies the configured motor ID on its configured
+serial device. A missing reply removes that motor from the online list after `online_timeout`.
 
 ## Motor ID Tools
 
-Connect only one motor when changing or checking an ID:
+`set_motor_id` and `check_motor_id` are retained for a single RS485 bus. For the robot's
+two-channel converter, check both assigned channels without moving the motors:
+
+```sh
+ros2 run ddsm115_controller check_motor_channels --ros-args \
+  -p left_usb_dev:=/dev/serial/by-id/usb-WCH.CN_USB_Quad_Serial_BD9133ABCD-if06 \
+  -p right_usb_dev:=/dev/serial/by-id/usb-WCH.CN_USB_Quad_Serial_BD9133ABCD-if04 \
+  -p left_motor_id:=2 -p right_motor_id:=1 -p attempts:=10
+```
+
+The forward-facing left wheel is CH4 / ID 2 and the right wheel is CH3 / ID 1. Prefer the
+`by-id` paths over `ttyACM*` names because they remain stable across USB re-enumeration.
+
+Connect only one motor when changing an ID:
 
 ```sh
 ros2 run ddsm115_controller set_motor_id \
@@ -101,6 +116,10 @@ The controller subscribes to:
 It publishes:
 
 - `/ddsm115/rpm_fb` (`std_msgs/msg/Int16MultiArray`, every `motor_update_period`)
+  uses motor ID minus one as the array index. `-32768` means a missing reply,
+  not a measured speed. The shared contract lives in `feedback.hpp`.
+  Both wheel entries must be valid before odometry integration; invalid or
+  truncated feedback pauses integration. Missing travel is not reconstructed.
 - `/ddsm115/cur_fb` (`std_msgs/msg/Float32MultiArray`, every `current_publish_period`)
 - `/ddsm115/temp_fb` (`std_msgs/msg/Int8MultiArray`, every `temperature_publish_period`)
 - `/ddsm115/error` (`std_msgs/msg/Int8MultiArray`, every `status_publish_period`)

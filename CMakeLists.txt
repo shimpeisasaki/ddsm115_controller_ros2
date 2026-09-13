@@ -25,6 +25,10 @@ add_executable(check_motor_id src/check_motor_id.cpp)
 target_link_libraries(check_motor_id motor_control)
 ament_target_dependencies(check_motor_id rclcpp)
 
+add_executable(check_motor_channels src/check_motor_channels.cpp)
+target_link_libraries(check_motor_channels motor_control)
+ament_target_dependencies(check_motor_channels rclcpp)
+
 add_executable(set_motor_id src/set_motor_id.cpp)
 target_link_libraries(set_motor_id motor_control)
 ament_target_dependencies(set_motor_id rclcpp)
@@ -47,6 +51,7 @@ install(DIRECTORY include/ DESTINATION include)
 install(TARGETS
   motor_control
   check_motor_id
+  check_motor_channels
   set_motor_id
   velocity_control
   two_wheels_robot

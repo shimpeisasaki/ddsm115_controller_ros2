@@ -3,12 +3,12 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
-#include <limits>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
 #include "ddsm115_controller/differential_drive.hpp"
+#include "ddsm115_controller/feedback.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/odometry.hpp"
@@ -136,19 +136,10 @@ public:
     rpm_subscription_ = create_subscription<std_msgs::msg::Int16MultiArray>(
       "/ddsm115/rpm_fb", motor_qos,
       [this](const std_msgs::msg::Int16MultiArray & message) {
-        const auto required_size = static_cast<std::size_t>(
-          std::max(left_motor_id_, right_motor_id_));
-        if (message.data.size() >= required_size) {
-          constexpr auto invalid_rpm = std::numeric_limits<std::int16_t>::min();
-          if (message.data[left_motor_id_ - 1] == invalid_rpm ||
-          message.data[right_motor_id_ - 1] == invalid_rpm)
-          {
-            feedback_valid_ = false;
-            return;
-          }
+        feedback_valid_ = wheel_feedback_valid(message.data, left_motor_id_, right_motor_id_);
+        if (feedback_valid_) {
           left_rpm_ = message.data[left_motor_id_ - 1] * left_direction_;
           right_rpm_ = message.data[right_motor_id_ - 1] * right_direction_;
-          feedback_valid_ = true;
           last_feedback_time_ = std::chrono::steady_clock::now();
         }
       });

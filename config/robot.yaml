@@ -1,10 +1,14 @@
 velocity_control_node:
   ros__parameters:
-    usb_dev: /dev/ttyUSB0
+    # CH4 / motor ID 2 and CH3 / motor ID 1 are separate RS485 buses.
+    left_usb_dev: /dev/serial/by-id/usb-WCH.CN_USB_Quad_Serial_BD9133ABCD-if06
+    right_usb_dev: /dev/serial/by-id/usb-WCH.CN_USB_Quad_Serial_BD9133ABCD-if04
+    left_motor_id: 2
+    right_motor_id: 1
     max_check: 2
     command_timeout: 0.5
     # Two RS485 request/reply transactions are performed every cycle.
-    motor_update_period: 0.05
+    motor_update_period: 0.033333
     serial_reply_timeout: 0.020
     online_timeout: 0.5
     current_publish_period: 1.0
@@ -16,13 +20,13 @@ two_wheels_robot_node:
     wheel_base: 0.208
     R_wheel: 0.050
     pub_tf: true
-    update_period: 0.02
+    update_period: 0.033333
     feedback_timeout: 0.2
     enable_joystick: false
-    left_motor_id: 1
-    right_motor_id: 2
-    left_direction: 1
-    right_direction: -1
+    left_motor_id: 2
+    right_motor_id: 1
+    left_direction: -1
+    right_direction: 1
     odom_frame: odom
     base_frame: base_link
     pose_xy_covariance: 0.01
@@ -32,21 +36,22 @@ two_wheels_robot_node:
 
 motor_test_gui:
   ros__parameters:
-    usb_dev: /dev/ttyUSB0
+    left_usb_dev: /dev/serial/by-id/usb-WCH.CN_USB_Quad_Serial_BD9133ABCD-if06
+    right_usb_dev: /dev/serial/by-id/usb-WCH.CN_USB_Quad_Serial_BD9133ABCD-if04
     max_check: 2
     command_timeout: 0.5
     wheel_base: 0.208
     wheel_radius: 0.050
-    left_motor_id: 1
-    right_motor_id: 2
-    left_direction: 1
-    right_direction: -1
+    left_motor_id: 2
+    right_motor_id: 1
+    left_direction: -1
+    right_direction: 1
     rpm_step: 10
     max_test_rpm: 150
     linear_step: 0.02
     angular_step: 0.1
     max_linear_speed: 1.762
     max_angular_speed: 2.0
-    control_period: 0.1
+    control_period: 0.033333
     joystick_deadzone: 0.03
     gui_joystick_timeout: 2.0

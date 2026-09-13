@@ -127,7 +127,8 @@ class ConfigDialog(QDialog):
         gui = self.config['motor_test_gui']['ros__parameters']
 
         layout = QFormLayout(self)
-        self.usb_dev = QLineEdit(str(velocity['usb_dev']))
+        self.left_usb_dev = QLineEdit(str(velocity['left_usb_dev']))
+        self.right_usb_dev = QLineEdit(str(velocity['right_usb_dev']))
         self.max_check = self._integer(velocity['max_check'], 1, 255)
         self.command_timeout = self._decimal(velocity['command_timeout'], 0.1, 30.0, 2)
         self.motor_update_period = self._decimal(
@@ -155,7 +156,8 @@ class ConfigDialog(QDialog):
         self.joystick_deadzone = self._decimal(gui['joystick_deadzone'], 0.0, 0.9, 2)
 
         for label, widget in [
-            ('Serial device', self.usb_dev),
+            ('Left serial device', self.left_usb_dev),
+            ('Right serial device', self.right_usb_dev),
             ('Maximum scanned ID', self.max_check),
             ('Command timeout [s]', self.command_timeout),
             ('Motor update period [s]', self.motor_update_period),
@@ -221,7 +223,8 @@ class ConfigDialog(QDialog):
         robot = self.config['two_wheels_robot_node']['ros__parameters']
         gui = self.config['motor_test_gui']['ros__parameters']
         velocity.update({
-            'usb_dev': self.usb_dev.text().strip(),
+            'left_usb_dev': self.left_usb_dev.text().strip(),
+            'right_usb_dev': self.right_usb_dev.text().strip(),
             'max_check': self.max_check.value(),
             'command_timeout': self.command_timeout.value(),
             'motor_update_period': self.motor_update_period.value(),
@@ -242,7 +245,8 @@ class ConfigDialog(QDialog):
             'right_direction': self.right_direction.currentData(),
         })
         gui.update({
-            'usb_dev': velocity['usb_dev'],
+            'left_usb_dev': velocity['left_usb_dev'],
+            'right_usb_dev': velocity['right_usb_dev'],
             'max_check': velocity['max_check'],
             'command_timeout': velocity['command_timeout'],
             'wheel_base': robot['wheel_base'],
@@ -279,7 +283,8 @@ class MotorTestBridge(Node):
     def __init__(self):
         super().__init__('motor_test_gui')
         self.config_file = self.declare_parameter('config_file', '').value
-        self.usb_dev = self.declare_parameter('usb_dev', '/dev/ttyUSB0').value
+        self.left_usb_dev = self.declare_parameter('left_usb_dev', '/dev/ddsm115_left').value
+        self.right_usb_dev = self.declare_parameter('right_usb_dev', '/dev/ddsm115_right').value
         self.max_check = self.declare_parameter('max_check', 2).value
         self.command_timeout = self.declare_parameter('command_timeout', 2.0).value
         self.wheel_base = self.declare_parameter('wheel_base', 0.207).value
@@ -480,7 +485,8 @@ class MotorTestWindow(QMainWindow):
         layout = QGridLayout(group)
         values = [
             ('Config file', self.bridge.config_file or '(not provided)'),
-            ('Serial device', self.bridge.usb_dev),
+            ('Left serial device', self.bridge.left_usb_dev),
+            ('Right serial device', self.bridge.right_usb_dev),
             ('Scan IDs', f'1 - {self.bridge.max_check}'),
             ('Command timeout', f'{self.bridge.command_timeout:.1f} s'),
             ('Wheel base', f'{self.bridge.wheel_base:.3f} m'),
