@@ -11,6 +11,8 @@ velocity_control_node:
     motor_update_period: 0.033333
     serial_reply_timeout: 0.020
     online_timeout: 0.5
+    # USB reconnect: exit after this loss interval; launch respawn reopens paths.
+    reconnect_restart_timeout: 2.0
     current_publish_period: 1.0
     temperature_publish_period: 1.0
     status_publish_period: 0.5
@@ -18,7 +20,9 @@ velocity_control_node:
 two_wheels_robot_node:
   ros__parameters:
     wheel_base: 0.208
-    R_wheel: 0.050
+    # Effective rolling radius calibrated from repeated 3 m ground tests.
+    # Physical tire radius remains 0.050 m in the URDF.
+    R_wheel: 0.05065
     pub_tf: true
     update_period: 0.033333
     feedback_timeout: 0.2
@@ -27,6 +31,8 @@ two_wheels_robot_node:
     right_motor_id: 1
     left_direction: -1
     right_direction: 1
+    # Added to signed raw feedback before mounting-direction conversion.
+    rpm_feedback_offset: 0.5
     odom_frame: odom
     base_frame: base_link
     pose_xy_covariance: 0.01

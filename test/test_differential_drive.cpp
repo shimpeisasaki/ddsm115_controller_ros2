@@ -39,6 +39,13 @@ TEST(DifferentialDrive, LimitsRpmProportionally)
   EXPECT_NEAR(limited.second, 330.0, 1.0e-9);
 }
 
+TEST(DifferentialDrive, CorrectsSignedFeedbackWithoutMovingZero)
+{
+  EXPECT_DOUBLE_EQ(correct_rpm_feedback(0.0, 0.5), 0.0);
+  EXPECT_DOUBLE_EQ(correct_rpm_feedback(89.5, 0.5), 90.0);
+  EXPECT_DOUBLE_EQ(correct_rpm_feedback(-90.2, 0.5), -89.7);
+}
+
 TEST(DifferentialDrive, IntegratesStraightAndArcMotion)
 {
   const auto straight = integrate_odometry({}, 1.0, 0.0, 1.0);

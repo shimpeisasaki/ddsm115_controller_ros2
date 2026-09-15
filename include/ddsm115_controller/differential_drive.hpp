@@ -23,6 +23,13 @@ inline std::pair<double, double> limit_wheel_rpm(
   return {left_rpm * scale, right_rpm * scale};
 }
 
+inline double correct_rpm_feedback(double raw_rpm, double signed_offset)
+{
+  // The DDSM115 feedback is quantized to integer RPM. A measured signed bias
+  // may remain around zero; preserving an exact zero prevents odometry creep.
+  return raw_rpm == 0.0 ? 0.0 : raw_rpm + signed_offset;
+}
+
 inline std::pair<double, double> twist_to_wheel_rpm(
   double linear, double angular, double wheel_base, double wheel_radius,
   double maximum_rpm = 330.0)

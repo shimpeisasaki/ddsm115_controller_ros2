@@ -56,6 +56,7 @@ public:
     right_motor_id_(declare_parameter("right_motor_id", 2)),
     left_direction_(declare_parameter("left_direction", 1)),
     right_direction_(declare_parameter("right_direction", -1)),
+    rpm_feedback_offset_(declare_parameter("rpm_feedback_offset", 0.0)),
     odom_frame_(declare_parameter("odom_frame", std::string("odom"))),
     base_frame_(declare_parameter("base_frame", std::string("base_link"))),
     pose_xy_covariance_(declare_parameter("pose_xy_covariance", 0.01)),
@@ -98,6 +99,9 @@ public:
     if (std::abs(left_direction_) != 1 || std::abs(right_direction_) != 1) {
       throw std::invalid_argument("motor directions must be 1 or -1");
     }
+    if (std::abs(rpm_feedback_offset_) > 5.0) {
+      throw std::invalid_argument("rpm_feedback_offset must be within +/-5 RPM");
+    }
     if (odom_frame_.empty() || base_frame_.empty() || odom_frame_ == base_frame_) {
       throw std::invalid_argument("odom_frame and base_frame must be distinct non-empty names");
     }
@@ -125,6 +129,8 @@ public:
     RCLCPP_INFO(
       get_logger(), "right motor: ID %d, direction %d", right_motor_id_, right_direction_);
     RCLCPP_INFO(
+      get_logger(), "signed raw RPM feedback offset: %.3f RPM", rpm_feedback_offset_);
+    RCLCPP_INFO(
       get_logger(), "odometry frames: %s -> %s", odom_frame_.c_str(), base_frame_.c_str());
 
     auto motor_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort();
@@ -138,8 +144,10 @@ public:
       [this](const std_msgs::msg::Int16MultiArray & message) {
         feedback_valid_ = wheel_feedback_valid(message.data, left_motor_id_, right_motor_id_);
         if (feedback_valid_) {
-          left_rpm_ = message.data[left_motor_id_ - 1] * left_direction_;
-          right_rpm_ = message.data[right_motor_id_ - 1] * right_direction_;
+          left_rpm_ = correct_rpm_feedback(
+            message.data[left_motor_id_ - 1], rpm_feedback_offset_) * left_direction_;
+          right_rpm_ = correct_rpm_feedback(
+            message.data[right_motor_id_ - 1], rpm_feedback_offset_) * right_direction_;
           last_feedback_time_ = std::chrono::steady_clock::now();
         }
       });
@@ -149,7 +157,12 @@ public:
         const auto contains = [&message](int id) {
           return std::find(message.data.begin(), message.data.end(), id) != message.data.end();
         };
-        wheels_online_ = contains(left_motor_id_) && contains(right_motor_id_);
+        const bool both_wheels_online =
+        contains(left_motor_id_) && contains(right_motor_id_);
+        if (wheels_online_ && !both_wheels_online) {
+          require_motion_rearm();
+        }
+        wheels_online_ = both_wheels_online;
       });
     velocity_subscription_ = create_subscription<geometry_msgs::msg::Twist>(
       "/cmd_vel", 10, std::bind(&TwoWheelsRobot::velocity_command, this, std::placeholders::_1));
@@ -237,12 +250,23 @@ private:
     smoothed_angular_acceleration_ = 0.0;
     publish_rpm(0.0, 0.0);
     publish_brake(false);
+    motion_rearm_required_ = false;
     joystick_high_speed_mode_ = high_speed;
     RCLCPP_INFO(
       get_logger(), "Joystick %s drive mode selected (max %.3f m/s)",
       high_speed ? "high" : "normal",
       high_speed ? joystick_high_max_linear_speed_ : joystick_low_max_linear_speed_);
     request_freewheel(false, false);
+  }
+
+  void require_motion_rearm()
+  {
+    motion_rearm_required_ = true;
+    reset_joystick_motion();
+    publish_rpm(0.0, 0.0);
+    RCLCPP_WARN(
+      get_logger(),
+      "Wheel motor communication lost; motion is inhibited until drive mode is reselected or zero cmd_vel is received");
   }
 
   void publish_rpm(double left, double right)
@@ -308,6 +332,20 @@ private:
       publish_rpm(0.0, 0.0);
       return;
     }
+    if (motion_rearm_required_) {
+      if (std::abs(linear) <= motion_rearm_zero_threshold_ &&
+        std::abs(angular) <= motion_rearm_zero_threshold_)
+      {
+        motion_rearm_required_ = false;
+        RCLCPP_INFO(get_logger(), "Received zero cmd_vel after motor reconnect; motion re-armed");
+      } else {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "Ignoring cmd_vel until a zero command re-arms motion after motor reconnect");
+        publish_rpm(0.0, 0.0);
+        return;
+      }
+    }
     const auto wheel_rpm = twist_to_wheel_rpm(linear, angular, wheel_base_, wheel_radius_);
     publish_rpm(wheel_rpm.first, wheel_rpm.second);
   }
@@ -354,15 +392,24 @@ private:
       std::chrono::duration<double>(update_time - last_update_time_).count();
     last_update_time_ = update_time;
 
+    if (wheels_online_ && feedback_valid_ &&
+      (
+        std::chrono::duration<double>(update_time - last_feedback_time_).count() >
+        feedback_timeout_))
+    {
+      wheels_online_ = false;
+      require_motion_rearm();
+    }
+
     if (cart_mode_ == 1) {
       const bool joystick_online =
         std::chrono::duration<double>(update_time - last_joystick_time_).count() <=
         joystick_timeout_;
       const double maximum_linear = joystick_high_speed_mode_ ?
         joystick_high_max_linear_speed_ : joystick_low_max_linear_speed_;
-      const double target_linear = joystick_online && wheels_online_ ?
+      const double target_linear = joystick_online && wheels_online_ && !motion_rearm_required_ ?
         joystick_linear_input_ * maximum_linear : 0.0;
-      const double target_angular = joystick_online && wheels_online_ ?
+      const double target_angular = joystick_online && wheels_online_ && !motion_rearm_required_ ?
         joystick_angular_input_ * joystick_max_angular_speed_ : 0.0;
       const auto linear_state = smooth_velocity(
         smoothed_linear_, target_linear, smoothed_linear_acceleration_,
@@ -457,6 +504,7 @@ private:
   int right_motor_id_;
   int left_direction_;
   int right_direction_;
+  double rpm_feedback_offset_;
   std::string odom_frame_;
   std::string base_frame_;
   double pose_xy_covariance_;
@@ -465,6 +513,8 @@ private:
   double twist_angular_covariance_;
   bool wheels_online_{false};
   bool feedback_valid_{false};
+  bool motion_rearm_required_{false};
+  static constexpr double motion_rearm_zero_threshold_{1e-3};
   double left_rpm_{0.0};
   double right_rpm_{0.0};
   double x_{0.0};

@@ -44,6 +44,8 @@ public:
     const double command_timeout = declare_parameter("command_timeout", 0.5);
     const double motor_update_period = declare_parameter("motor_update_period", 0.05);
     const double online_timeout = declare_parameter("online_timeout", 0.5);
+    const double reconnect_restart_timeout =
+      declare_parameter("reconnect_restart_timeout", 2.0);
     const double serial_reply_timeout = declare_parameter("serial_reply_timeout", 0.020);
     const double current_publish_period = declare_parameter("current_publish_period", 1.0);
     const double temperature_publish_period =
@@ -58,6 +60,7 @@ public:
       throw std::invalid_argument("left_motor_id and right_motor_id must be distinct positive IDs");
     }
     if (command_timeout <= 0.0 || motor_update_period <= 0.0 || online_timeout <= 0.0 ||
+      reconnect_restart_timeout <= 0.0 ||
       serial_reply_timeout <= 0.0 || current_publish_period <= 0.0 ||
       temperature_publish_period <= 0.0 || status_publish_period <= 0.0)
     {
@@ -79,6 +82,7 @@ public:
     command_timeout_ = std::chrono::duration<double>(command_timeout);
     motor_update_period_ = std::chrono::duration<double>(motor_update_period);
     online_timeout_ = std::chrono::duration<double>(online_timeout);
+    reconnect_restart_timeout_ = std::chrono::duration<double>(reconnect_restart_timeout);
     current_publish_period_ = std::chrono::duration<double>(current_publish_period);
     temperature_publish_period_ = std::chrono::duration<double>(temperature_publish_period);
     status_publish_period_ = std::chrono::duration<double>(status_publish_period);
@@ -93,6 +97,8 @@ public:
       right_device.c_str());
     RCLCPP_INFO(get_logger(), "motor_update_period: %.3f s", motor_update_period);
     RCLCPP_INFO(get_logger(), "serial_reply_timeout: %.3f s", serial_reply_timeout);
+    RCLCPP_INFO(
+      get_logger(), "restart after all motors offline: %.3f s", reconnect_restart_timeout);
 
     rpm_commands_.resize(maximum_motor_id_);
     rpm_feedback_.resize(maximum_motor_id_, 0);
@@ -261,6 +267,17 @@ private:
       }
     }
     std::sort(online_ids_.begin(), online_ids_.end());
+    if (online_ids_.size() == channels_.size()) {
+      all_motors_offline_since_.reset();
+    } else if (!all_motors_offline_since_) {
+      all_motors_offline_since_ = update_start;
+    } else if (update_start - *all_motors_offline_since_ > reconnect_restart_timeout_) {
+      RCLCPP_ERROR(
+        get_logger(), "One or more motors offline for %.3f s; exiting to reopen USB serial devices",
+        reconnect_restart_timeout_.count());
+      rclcpp::shutdown();
+      return;
+    }
     publish_feedback(update_start);
   }
 
@@ -312,6 +329,7 @@ private:
   std::chrono::duration<double> command_timeout_{0.5};
   std::chrono::duration<double> motor_update_period_{0.05};
   std::chrono::duration<double> online_timeout_{0.5};
+  std::chrono::duration<double> reconnect_restart_timeout_{2.0};
   std::chrono::duration<double> current_publish_period_{1.0};
   std::chrono::duration<double> temperature_publish_period_{1.0};
   std::chrono::duration<double> status_publish_period_{0.5};
@@ -323,6 +341,7 @@ private:
   std::chrono::steady_clock::time_point last_status_publish_time_{
     std::chrono::steady_clock::now()};
   std::vector<std::chrono::steady_clock::time_point> last_response_times_;
+  std::optional<std::chrono::steady_clock::time_point> all_motors_offline_since_;
   rclcpp::Subscription<std_msgs::msg::Int16MultiArray>::SharedPtr rpm_command_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr brake_subscription_;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr freewheel_service_;
