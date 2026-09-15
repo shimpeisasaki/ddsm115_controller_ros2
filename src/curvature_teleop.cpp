@@ -111,7 +111,7 @@ private:
     const double right_horizontal = message.axes.size() > 3 ? message.axes[3] : 0.0;
     const double right_vertical = message.axes.size() > 4 ? message.axes[4] : 0.0;
     linear_input_ = apply_deadzone(right_vertical, joystick_deadzone_);
-    curvature_input_ = apply_deadzone(-right_horizontal, curvature_deadzone_);
+    curvature_input_ = apply_deadzone(right_horizontal, curvature_deadzone_);
 
     const auto pressed = [&message, this](std::size_t index) {
         return message.buttons.size() > index && message.buttons[index] == 1 &&
