@@ -127,9 +127,8 @@ void MotorControl::write_packet(const std::uint8_t * data, std::size_t size)
       throw std::runtime_error("Serial port became unavailable while writing");
     }
   }
-  if (tcdrain(serial_fd_) != 0) {
-    throw std::system_error(errno, std::generic_category(), "Serial drain failed");
-  }
+  // Do not use an unbounded tcdrain here: disconnect/shutdown must not hang.
+  // read_reply waits for the device acknowledgment after the queued write.
 }
 
 void MotorControl::set_id(std::uint8_t id)

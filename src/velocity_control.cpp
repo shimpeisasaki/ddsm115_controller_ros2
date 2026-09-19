@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <cstdio>
 #include <optional>
 #include <string>
 #include <utility>
@@ -9,12 +10,14 @@
 
 #include "ddsm115_controller/feedback.hpp"
 #include "ddsm115_controller/motor_control.hpp"
+#include "ddsm115_controller/safety_lease.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
 #include "std_msgs/msg/int16_multi_array.hpp"
 #include "std_msgs/msg/int8_multi_array.hpp"
 #include "std_msgs/msg/u_int8_multi_array.hpp"
+#include "std_msgs/msg/u_int8.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 
 using namespace std::chrono_literals;
@@ -24,6 +27,30 @@ namespace ddsm115_controller
 
 struct MotorChannel
 {
+  MotorChannel(std::string label, int id, std::unique_ptr<MotorControl> motor)
+  : name(std::move(label)), motor_id(id), driver(std::move(motor)) {}
+  MotorChannel(MotorChannel &&) = default;
+  MotorChannel(const MotorChannel &) = delete;
+  ~MotorChannel()
+  {
+    // Also runs on partial construction failure, exception, and normal SIGINT exit.
+    // Does not depend on ROS publishers or a running ROS context.
+    if (!driver) {return;}
+    for (int attempt = 0; attempt < 3; ++attempt) {
+      try {
+        driver->send_current(motor_id, 0.0F);  // zero in either current or velocity mode
+        driver->set_drive_mode(motor_id, 2);
+        const auto reply = driver->set_brake(motor_id);
+        if (reply.id == motor_id && reply.rpm == 0 && reply.error == 0) {
+          return;
+        }
+      } catch (const std::exception & error) {
+        std::fprintf(stderr, "Shutdown brake %s ID %d: %s\n", name.c_str(), motor_id, error.what());
+      }
+    }
+    std::fprintf(stderr, "Shutdown brake %s ID %d: stop NOT confirmed; check physical stop\n",
+      name.c_str(), motor_id);
+  }
   std::string name;
   int motor_id;
   std::unique_ptr<MotorControl> driver;
@@ -42,6 +69,12 @@ public:
     const int left_motor_id = declare_parameter("left_motor_id", 2);
     const int right_motor_id = declare_parameter("right_motor_id", 1);
     const double command_timeout = declare_parameter("command_timeout", 0.5);
+    safety_required_ = declare_parameter("require_safety_heartbeat", false);
+    const double safety_timeout = declare_parameter("safety_heartbeat_timeout", 0.3);
+    if (!(safety_timeout >= 0.1 && safety_timeout <= 1.0)) {
+      throw std::invalid_argument("safety_heartbeat_timeout must be 0.1..1.0 seconds");
+    }
+    safety_lease_ = std::make_unique<SafetyLease>(safety_timeout);
     const double motor_update_period = declare_parameter("motor_update_period", 0.05);
     const double online_timeout = declare_parameter("online_timeout", 0.5);
     const double reconnect_restart_timeout =
@@ -120,7 +153,9 @@ public:
       last_response_times_[channel.motor_id - 1] = startup_time;
       RCLCPP_INFO(
         get_logger(), "%s", channel.driver->set_drive_mode(channel.motor_id, 2).c_str());
+      channel.driver->set_brake(channel.motor_id);
     }
+    brake_enabled_ = safety_required_;
 
     auto qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort();
     rpm_command_subscription_ = create_subscription<std_msgs::msg::Int16MultiArray>(
@@ -136,6 +171,13 @@ public:
     brake_subscription_ = create_subscription<std_msgs::msg::Bool>(
       "/ddsm115/brake", qos,
       [this](const std_msgs::msg::Bool & message) {set_brake_enabled(message.data);});
+    if (safety_required_) {
+      safety_subscription_ = create_subscription<std_msgs::msg::UInt8>(
+        "/navigation_safety/mode", rclcpp::QoS(1).reliable(),
+        [this](const std_msgs::msg::UInt8 & message) {
+          safety_lease_->receive(message.data, std::chrono::steady_clock::now());
+        });
+    }
     freewheel_service_ = create_service<std_srvs::srv::SetBool>(
       "/ddsm115/set_freewheel",
       std::bind(
@@ -178,6 +220,13 @@ private:
 
   void set_brake_enabled(bool enabled)
   {
+    if (safety_required_ && !safety_applying_) {
+      if (!enabled) {
+        RCLCPP_WARN(get_logger(), "Brake release rejected: use /navigation_safety/arm");
+        return;
+      }
+      safety_lease_->trip();
+    }
     try {
       if (enabled && freewheel_enabled_) {
         for (auto & channel : channels_) {
@@ -200,6 +249,11 @@ private:
     const std_srvs::srv::SetBool::Request::SharedPtr request,
     std_srvs::srv::SetBool::Response::SharedPtr response)
   {
+    if (safety_required_ && !safety_applying_) {
+      response->success = false;
+      response->message = "Navigation safety owns motor mode; use its free/arm services";
+      return;
+    }
     try {
       std::fill(rpm_commands_.begin(), rpm_commands_.end(), std::int16_t{0});
       if (request->data) {
@@ -235,10 +289,30 @@ private:
   void update()
   {
     const auto update_start = std::chrono::steady_clock::now();
+    if (safety_required_) {
+      const auto mode = safety_lease_->mode(update_start);
+      safety_applying_ = true;
+      if (mode == 0 && (!brake_enabled_ || freewheel_enabled_)) {
+        set_brake_enabled(true);
+      } else if ((mode == 1 && !freewheel_enabled_) ||
+        (mode == 2 && (freewheel_enabled_ || brake_enabled_)))
+      {
+        auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+        auto response = std::make_shared<std_srvs::srv::SetBool::Response>();
+        request->data = mode == 1;
+        set_freewheel(request, response);
+        if (!response->success) {
+          safety_lease_->trip();
+          set_brake_enabled(true);
+        }
+      }
+      safety_applying_ = false;
+    }
     if (!freewheel_enabled_ && !brake_enabled_ &&
       update_start - last_command_time_ > command_timeout_)
     {
       std::fill(rpm_commands_.begin(), rpm_commands_.end(), std::int16_t{0});
+      if (safety_required_) {set_brake_enabled(true);}
     }
 
     for (auto & channel : channels_) {
@@ -270,6 +344,7 @@ private:
     if (online_ids_.size() == channels_.size()) {
       all_motors_offline_since_.reset();
     } else if (!all_motors_offline_since_) {
+      if (safety_required_) {safety_lease_->trip();}
       all_motors_offline_since_ = update_start;
     } else if (update_start - *all_motors_offline_since_ > reconnect_restart_timeout_) {
       RCLCPP_ERROR(
@@ -324,6 +399,10 @@ private:
   std::vector<float> current_feedback_;
   std::vector<std::int8_t> errors_;
   bool brake_enabled_{false};
+  bool safety_required_{false};
+  bool safety_applying_{false};
+  std::unique_ptr<SafetyLease> safety_lease_;
+  rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr safety_subscription_;
   bool freewheel_enabled_{false};
   int maximum_motor_id_{0};
   std::chrono::duration<double> command_timeout_{0.5};

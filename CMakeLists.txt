@@ -65,6 +65,7 @@ install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
 install(PROGRAMS
   scripts/cmd_vel_test
   scripts/motor_test_gui
+  scripts/direct_motor_brake.py
   DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
@@ -81,6 +82,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_differential_drive test/test_differential_drive.cpp)
   target_include_directories(test_differential_drive PRIVATE include)
+  ament_add_gtest(test_safety_lease test/test_safety_lease.cpp)
+  target_include_directories(test_safety_lease PRIVATE include)
+  target_compile_features(test_safety_lease PUBLIC cxx_std_17)
 endif()
 
 ament_package()

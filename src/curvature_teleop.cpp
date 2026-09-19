@@ -29,7 +29,8 @@ public:
     curvature_deadzone_(declare_parameter("curvature_deadzone", 0.05)),
     normal_max_linear_speed_(declare_parameter("normal_max_linear_speed", 1.0)),
     high_max_linear_speed_(declare_parameter("high_max_linear_speed", 1.666667)),
-    maximum_curvature_(declare_parameter("maximum_curvature", 0.8))
+    maximum_curvature_(declare_parameter("maximum_curvature", 0.8)),
+    safety_managed_(declare_parameter("safety_managed", false))
   {
     if (update_period_ <= 0.0 || joystick_timeout_ <= 0.0 ||
       joystick_deadzone_ < 0.0 || joystick_deadzone_ >= 1.0 ||
@@ -99,8 +100,10 @@ private:
   {
     drive_enabled_ = true;
     high_speed_mode_ = high_speed;
-    publish_brake(false);
-    request_freewheel(false);
+    if (!safety_managed_) {
+      publish_brake(false);
+      request_freewheel(false);
+    }
     RCLCPP_INFO(
       get_logger(), "%s drive selected", high_speed ? "High" : "Normal");
   }
@@ -117,15 +120,23 @@ private:
         return message.buttons.size() > index && message.buttons[index] == 1 &&
                (previous_buttons_.size() <= index || previous_buttons_[index] == 0);
       };
-    if (pressed(3)) {  // Y: Freewheel
+    if (pressed(1)) {  // B: Brake has priority over simultaneous Y
       drive_enabled_ = false;
-      publish_brake(false);
-      request_freewheel(true);
-    } else if (pressed(1)) {  // B: Brake
+      if (!safety_managed_) {
+        publish_brake(true);
+      }
+    } else if (pressed(3)) {  // Y: Freewheel
       drive_enabled_ = false;
-      publish_brake(true);
-    } else if (pressed(0)) {  // A: High drive
-      select_drive(true);
+      if (!safety_managed_) {
+        publish_brake(false);
+        request_freewheel(true);
+      }
+    } else if (pressed(0)) {  // A: navigation when an external safety manager is used
+      if (safety_managed_) {
+        drive_enabled_ = false;
+      } else {
+        select_drive(true);
+      }
     } else if (pressed(2)) {  // X: Normal drive
       select_drive(false);
     }
@@ -156,6 +167,7 @@ private:
   double normal_max_linear_speed_;
   double high_max_linear_speed_;
   double maximum_curvature_;
+  bool safety_managed_;
   bool drive_enabled_{false};
   bool high_speed_mode_{false};
   double linear_input_{0.0};
